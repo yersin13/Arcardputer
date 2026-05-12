@@ -177,18 +177,16 @@ static void drawLabels() {
 
 static void drawMsg() {
     auto& d = M5Cardputer.Display;
-    d.fillRect(0,119,240,13,C_BG);
+    d.fillRect(0,118,240,9,C_BG);
     if (!msg[0]) return;
     d.setTextSize(1); d.setTextColor(msgCol);
-    d.setCursor((240-d.textWidth(msg))/2,119); d.print(msg);
+    d.setCursor((240-d.textWidth(msg))/2,118); d.print(msg);
 }
 
 static void drawFooter() {
     auto& d = M5Cardputer.Display;
-    d.fillRect(0,133,240,2,0x0821);   // thin divider
-    // compact one-liner that fits 240px
-    d.setTextSize(1); d.fillRect(0,124,240,9,0x0821);
-    d.setTextColor(0x39E7); d.setCursor(2,124);
+    d.fillRect(0,127,240,8,0x0821);
+    d.setTextSize(1); d.setTextColor(0x39E7); d.setCursor(2,127);
     if      (bjState==BETTING)     d.print("+/-=BET  SPC=DEAL  Q=MENU");
     else if (bjState==PLAYER_TURN) d.print("H=HIT  S=STAND  D=DBL  Q=MENU");
     else                           d.print("SPC/Enter=NEXT  Q=MENU");

@@ -12,14 +12,12 @@ static const uint16_t C_RED  = 0xF800;
 static const uint16_t C_GRN  = 0x07E0;
 static const uint16_t C_BLK  = 0x2104;
 static const uint16_t C_MGN  = 0xF81F;
-static const uint16_t C_CYN  = 0x07FF;
-static const uint16_t C_ZERO = 0x03E0; // green for 0
+static const uint16_t C_ZERO = 0x03E0;
 
-// European roulette pocket order (0 at index 0, then clockwise)
+// European roulette clockwise pocket order
 static const int WHEEL_ORDER[37] = {
     0,32,15,19,4,21,2,25,17,34,6,27,13,36,11,30,8,23,10,5,24,16,33,1,20,14,31,9,22,18,29,7,28,12,35,3,26
 };
-// Red numbers in European roulette
 static const int RED_NUMS[18] = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36};
 
 static bool isRed(int n) {
@@ -28,73 +26,73 @@ static bool isRed(int n) {
     return false;
 }
 
-// ── Wheel geometry ────────────────────────────────────────────────────────
-static const int WCX = 120, WCY = 68;  // wheel center
-static const int WR_OUT = 58;           // outer radius
-static const int WR_IN  = 30;           // inner radius (ball track)
-static const int WR_NUM = 44;           // number label radius
+// ── Elliptical wheel geometry ─────────────────────────────────────────────
+// Layout: header 0-15, HUD 16-26, wheel 29-111, msg 113-121, footer 122-134
+// Ellipse: center (120,70), outer semi-axes a=108 h, b=40 v
+// → top=30, bottom=110, left=12, right=228 — fits the 240×135 screen perfectly
+
+static const int   WCX  = 120, WCY = 70;
+static const int   WR_OA = 108, WR_OB = 40;   // outer semi-axes
+static const int   WR_IA = 42,  WR_IB = 16;   // inner (hub) semi-axes
+static const int   WR_NA = 85,  WR_NB = 31;   // number label position
 
 static const float TWO_PI_F = 6.2831853f;
-static const float SEG = TWO_PI_F / 37.0f; // angle per segment
+static const float SEG = TWO_PI_F / 37.0f;
 
-static void drawWheel(float angleOffset, int highlighted=-1) {
+static void drawWheel(float angle, int highlight=-1) {
     auto& d = M5Cardputer.Display;
-    // Draw 37 segments
+
     for(int i=0;i<37;i++){
-        float a0 = angleOffset + i*SEG;
-        float a1 = a0 + SEG;
-        float amid = a0 + SEG*0.5f;
-        int n = WHEEL_ORDER[i];
-        uint16_t col = (n==0) ? C_ZERO : (isRed(n)?C_RED:C_BLK);
-        if(highlighted==i) col = C_GOLD;
-        // Fill segment with multiple triangles for smoother look
-        int steps=4;
-        for(int s=0;s<steps;s++){
-            float sa=a0+s*(a1-a0)/steps;
-            float sb=a0+(s+1)*(a1-a0)/steps;
-            int x0=WCX+(int)(cosf(sa)*WR_IN);  int y0=WCY+(int)(sinf(sa)*WR_IN);
-            int x1=WCX+(int)(cosf(sb)*WR_IN);  int y1=WCY+(int)(sinf(sb)*WR_IN);
-            int x2=WCX+(int)(cosf(sa)*WR_OUT); int y2=WCY+(int)(sinf(sa)*WR_OUT);
-            int x3=WCX+(int)(cosf(sb)*WR_OUT); int y3=WCY+(int)(sinf(sb)*WR_OUT);
-            d.fillTriangle(x0,y0,x1,y1,x2,y2,col);
-            d.fillTriangle(x1,y1,x2,y2,x3,y3,col);
+        float a0=angle+i*SEG, a1=a0+SEG;
+        int n=WHEEL_ORDER[i];
+        uint16_t col=(highlight==i)?C_GOLD:((n==0)?C_ZERO:(isRed(n)?C_RED:C_BLK));
+        // Fill segment with 4 quads
+        for(int s=0;s<4;s++){
+            float sa=a0+s*(a1-a0)/4.0f, sb=a0+(s+1)*(a1-a0)/4.0f;
+            int ix0=WCX+(int)(WR_IA*cosf(sa)), iy0=WCY+(int)(WR_IB*sinf(sa));
+            int ix1=WCX+(int)(WR_IA*cosf(sb)), iy1=WCY+(int)(WR_IB*sinf(sb));
+            int ox0=WCX+(int)(WR_OA*cosf(sa)), oy0=WCY+(int)(WR_OB*sinf(sa));
+            int ox1=WCX+(int)(WR_OA*cosf(sb)), oy1=WCY+(int)(WR_OB*sinf(sb));
+            d.fillTriangle(ix0,iy0,ix1,iy1,ox0,oy0,col);
+            d.fillTriangle(ix1,iy1,ox0,oy0,ox1,oy1,col);
         }
-        // Separator lines
-        int lx0=WCX+(int)(cosf(a0)*WR_IN);  int ly0=WCY+(int)(sinf(a0)*WR_IN);
-        int lx1=WCX+(int)(cosf(a0)*WR_OUT); int ly1=WCY+(int)(sinf(a0)*WR_OUT);
-        d.drawLine(lx0,ly0,lx1,ly1,C_GOLD);
+        // Segment divider
+        int lxi=WCX+(int)(WR_IA*cosf(a0)), lyi=WCY+(int)(WR_IB*sinf(a0));
+        int lxo=WCX+(int)(WR_OA*cosf(a0)), lyo=WCY+(int)(WR_OB*sinf(a0));
+        d.drawLine(lxi,lyi,lxo,lyo,C_DIM);
     }
-    // Inner circle (center hub)
-    d.fillCircle(WCX,WCY,WR_IN-1,0x0821);
-    d.drawCircle(WCX,WCY,WR_IN,C_GOLD);
-    d.drawCircle(WCX,WCY,WR_OUT,C_GOLD);
-    // Draw numbers in segments
+
+    // Hub and borders using M5GFX ellipse primitives
+    d.fillEllipse(WCX,WCY,WR_IA-1,WR_IB-1,0x0821);
+    d.drawEllipse(WCX,WCY,WR_IA,WR_IB,C_GOLD);
+    d.drawEllipse(WCX,WCY,WR_OA,WR_OB,C_GOLD);
+
+    // Number labels
     d.setTextSize(1);
     for(int i=0;i<37;i++){
-        float amid=angleOffset+i*SEG+SEG*0.5f;
-        int nx=WCX+(int)(cosf(amid)*WR_NUM);
-        int ny=WCY+(int)(sinf(amid)*WR_NUM);
+        float amid=angle+i*SEG+SEG*0.5f;
+        int nx=WCX+(int)(WR_NA*cosf(amid));
+        int ny=WCY+(int)(WR_NB*sinf(amid));
         int n=WHEEL_ORDER[i];
         char buf[4]; snprintf(buf,sizeof(buf),"%d",n);
-        uint16_t tc=(n==0)?C_BG:(isRed(n)?C_TXT:C_TXT);
-        d.setTextColor(tc);
+        d.setTextColor(C_TXT);
         d.setCursor(nx-d.textWidth(buf)/2, ny-4);
         d.print(buf);
     }
-    // Pointer (top = -PI/2)
-    int px=WCX+(int)(cosf(angleOffset-TWO_PI_F/4)*WR_OUT)-4;
-    // Fixed pointer at top
-    d.fillTriangle(WCX,WCY-WR_OUT-2, WCX-4,WCY-WR_OUT+4, WCX+4,WCY-WR_OUT+4, C_GOLD);
+
+    // Pointer: downward triangle at top of ellipse
+    int py=WCY-WR_OB;
+    d.fillTriangle(WCX,py-4, WCX-5,py+4, WCX+5,py+4, C_GOLD);
 }
 
 // ── Bet types ─────────────────────────────────────────────────────────────
-enum BetType { BET_RED=0, BET_BLACK, BET_ODD, BET_EVEN, BET_LOW, BET_HIGH, BET_DOZEN1, BET_DOZEN2, BET_DOZEN3, BET_NUM_TYPES };
-static const char* BET_NAMES[BET_NUM_TYPES] = {"RED","BLACK","ODD","EVEN","1-18","19-36","1-12","13-24","25-36"};
-static const int   BET_PAY [BET_NUM_TYPES]  = {  2,     2,    2,    2,    2,     2,      3,      3,      3    };
+enum BetType { BET_RED=0,BET_BLACK,BET_ODD,BET_EVEN,BET_LOW,BET_HIGH,BET_DOZEN1,BET_DOZEN2,BET_DOZEN3,BET_NTYPES };
+static const char* BET_NAMES[BET_NTYPES]={"RED","BLACK","ODD","EVEN","1-18","19-36","1-12","13-24","25-36"};
+static const int   BET_PAY [BET_NTYPES]={  2,     2,    2,    2,    2,     2,      3,      3,      3};
 
-static bool betWins(int betIdx, int n) {
+static bool betWins(int t, int n){
     if(n==0) return false;
-    switch(betIdx){
+    switch(t){
         case BET_RED:    return isRed(n);
         case BET_BLACK:  return !isRed(n);
         case BET_ODD:    return n%2==1;
@@ -109,18 +107,14 @@ static bool betWins(int betIdx, int n) {
 }
 
 // ── State ─────────────────────────────────────────────────────────────────
-static int   credits, bet;
-static int   betType;
-static int   result;          // winning number
-static float wheelAngle;      // current visual angle offset
-static float spinSpeed;       // radians per tick
-static int   spinTicks;
-static int   totalTicks;
+static int   credits, bet, betType, result;
+static float wheelAngle, maxSpeed;
+static int   spinTicks, totalTicks;
 static char  msg[56]; static uint16_t msgCol;
 static bool  soundOn=false; static int soundVol=100;
 static enum  { BETTING, SPINNING, RESULT } rlState;
 
-static void sndTick() { if(!soundOn)return; M5Cardputer.Speaker.tone(800+(int)(spinSpeed*200),15); }
+static void sndTick() { if(!soundOn)return; M5Cardputer.Speaker.tone(700+(int)(maxSpeed*300),12); }
 static void sndWin()  { if(!soundOn)return; M5Cardputer.Speaker.tone(880,80);delay(90);M5Cardputer.Speaker.tone(1100,120); }
 static void sndLose() { if(!soundOn)return; M5Cardputer.Speaker.tone(300,200); }
 
@@ -132,60 +126,64 @@ static void drawHeader() {
 }
 static void drawHUD() {
     auto& d=M5Cardputer.Display;
-    d.fillRect(0,17,240,11,C_BG); d.setTextSize(1);
-    char l[28],r[24];
+    d.fillRect(0,16,240,12,C_BG); d.setTextSize(1);
+    char l[30],r[22];
     snprintf(l,sizeof(l),"BET:%d on %s",bet,BET_NAMES[betType]);
     snprintf(r,sizeof(r),"CREDITS:%d",credits);
     uint16_t lc=(betType==BET_RED)?C_RED:(betType==BET_BLACK?C_DIM:C_TXT);
-    d.setTextColor(lc); d.setCursor(4,18); d.print(l);
-    d.setTextColor(C_TXT); d.setCursor(240-d.textWidth(r)-4,18); d.print(r);
-}
-static void drawBetSelector() {
-    auto& d=M5Cardputer.Display;
-    // Two rows of bet buttons at the bottom of the wheel area, inside WCY+WR_OUT
-    // Place below wheel: WCY+WR_OUT ~ 126 but screen is 135. Use compact row.
-    d.fillRect(0,WCY+WR_OUT+2,240,6,C_BG);
-    // just show prev/next hint, current bet highlighted
-    d.setTextSize(1); d.setTextColor(0x39E7);
-    const char* hint="A/D=BetType  +/-=BetAmt  SPC=SPIN  Q=MENU";
-    d.setCursor((240-d.textWidth(hint))/2, WCY+WR_OUT+2);
-    d.print(hint);
+    d.setTextColor(lc); d.setCursor(4,17); d.print(l);
+    d.setTextColor(C_TXT); d.setCursor(240-d.textWidth(r)-4,17); d.print(r);
 }
 static void drawMsg() {
     auto& d=M5Cardputer.Display;
-    d.fillRect(0,126,240,9,C_BG);
+    d.fillRect(0,112,240,10,C_BG);
     if(!msg[0]) return;
     d.setTextSize(1); d.setTextColor(msgCol);
-    d.setCursor((240-d.textWidth(msg))/2,126); d.print(msg);
+    d.setCursor((240-d.textWidth(msg))/2,113); d.print(msg);
+}
+static void drawFooter() {
+    auto& d=M5Cardputer.Display;
+    d.fillRect(0,122,240,13,0x0821);
+    d.setTextSize(1); d.setTextColor(0x39E7); d.setCursor(2,124);
+    if(rlState==RESULT) d.print("SPC=AGAIN  A/D=BetType  +/-=Bet  Q=MENU");
+    else                d.print("A/D=BetType  +/-=Bet  SPC=SPIN  Q=MENU");
 }
 
 static void redrawAll() {
-    M5Cardputer.Display.fillScreen(C_BG);
-    drawHeader(); drawHUD(); drawWheel(wheelAngle); drawBetSelector(); drawMsg();
+    auto& d=M5Cardputer.Display;
+    d.fillScreen(C_BG);
+    drawHeader(); drawHUD();
+    drawWheel(wheelAngle);
+    drawMsg(); drawFooter();
+}
+
+// Find pocket index currently under the pointer (angle = -PI/2)
+static int pocketUnderPointer() {
+    float ptr = -TWO_PI_F/4.0f;
+    int best=0; float bestDiff=999.f;
+    for(int i=0;i<37;i++){
+        float mid = wheelAngle + i*SEG + SEG*0.5f;
+        float diff = fmodf(mid - ptr, TWO_PI_F);
+        if(diff<0) diff+=TWO_PI_F;
+        if(diff>TWO_PI_F/2.0f) diff=TWO_PI_F-diff;
+        if(diff<bestDiff){bestDiff=diff;best=i;}
+    }
+    return best;
 }
 
 static void startSpin() {
     if(credits<bet){snprintf(msg,sizeof(msg),"Not enough credits!");msgCol=C_RED;drawMsg();return;}
     credits-=bet;
-    // Pick result: random pocket
-    int pocketIdx=random(37);
-    result=WHEEL_ORDER[pocketIdx];
-    // Calculate target angle so that pocket lands at the pointer (top = -PI/2)
-    // Pointer is at angle -PI/2 in screen coords. Segment i is at angleOffset + i*SEG + SEG/2 = -PI/2
-    // So angleOffset = -PI/2 - pocketIdx*SEG - SEG/2
-    float targetAngle = -TWO_PI_F/4.0f - pocketIdx*SEG - SEG*0.5f;
-    // Add random full rotations (5-10)
-    int extraSpins = 5 + random(6);
-    float totalAngle = wheelAngle + extraSpins*TWO_PI_F + fmod(targetAngle - fmod(wheelAngle, TWO_PI_F) + TWO_PI_F*2, TWO_PI_F);
-    totalTicks = 60 + extraSpins*8;
-    spinSpeed = (totalAngle - wheelAngle) / totalTicks; // approximate; we'll use easing
-    spinTicks = 0; rlState = SPINNING;
+    totalTicks = 100 + random(60);
+    maxSpeed   = 0.42f + random(20)*0.012f;
+    spinTicks  = 0;
+    rlState    = SPINNING;
     msg[0]='\0'; drawHUD(); drawMsg();
 }
 
 void init() {
     credits=100; bet=5; betType=BET_RED; result=0;
-    wheelAngle=0.0f; spinSpeed=0.0f; spinTicks=0; totalTicks=0;
+    wheelAngle=0.0f; maxSpeed=0.5f; spinTicks=0; totalTicks=0;
     msg[0]='\0'; msgCol=C_DIM; rlState=BETTING;
     M5Cardputer.Speaker.setVolume(soundVol);
     redrawAll();
@@ -202,13 +200,11 @@ bool tick() {
             if(c==']'){soundVol=min(soundVol+50,250);M5Cardputer.Speaker.setVolume(soundVol);}
             if(c=='['){soundVol=max(soundVol-50,50);M5Cardputer.Speaker.setVolume(soundVol);}
             if(c==' ') act=true;
-            if(rlState==BETTING){
+            if(rlState==BETTING||rlState==RESULT){
                 if(c=='+'||c=='='){bet=min(bet+1,20);drawHUD();}
                 if(c=='-')       {bet=max(bet-1,1); drawHUD();}
-                if(c=='a'||c=='A'){betType=(betType-1+BET_NUM_TYPES)%BET_NUM_TYPES;drawHUD();}
-                if(c=='d'||c=='D'){betType=(betType+1)%BET_NUM_TYPES;drawHUD();}
-            } else if(rlState==RESULT){
-                // handled by act below
+                if(c=='a'||c=='A'){betType=(betType-1+BET_NTYPES)%BET_NTYPES;drawHUD();}
+                if(c=='d'||c=='D'){betType=(betType+1)%BET_NTYPES;drawHUD();}
             }
         }
         if(act){
@@ -225,62 +221,44 @@ bool tick() {
     if(rlState==SPINNING){
         spinTicks++;
         float progress=(float)spinTicks/(float)totalTicks;
-        // Ease-out: start fast, decelerate
-        float easedSpeed = spinSpeed * (1.0f - progress*progress*0.85f) + 0.005f;
-        if(easedSpeed<0.008f) easedSpeed=0.008f;
-        wheelAngle += easedSpeed;
-        // Redraw wheel every 2 ticks for smooth animation
+        float spd=maxSpeed*(1.0f-progress*0.96f);
+        if(spd<0.012f) spd=0.012f;
+        wheelAngle+=spd;
+
         if(spinTicks%2==0){
-            // Only redraw wheel area
-            auto& d=M5Cardputer.Display;
-            d.fillCircle(WCX,WCY,WR_OUT+2,C_BG);
-            drawWheel(wheelAngle);
             sndTick();
-        }
-        if(spinTicks>=totalTicks){
-            // Snap to final position: find which pocket is at pointer
-            // pointer at -PI/2. Find pocket whose center is closest to -PI/2 - wheelAngle (mod SEG)
-            float ptrAngle = -TWO_PI_F/4.0f;
-            int bestIdx=0; float bestDiff=999.0f;
-            for(int i=0;i<37;i++){
-                float segAngle = wheelAngle + i*SEG + SEG*0.5f;
-                // Normalize to [0, 2PI)
-                float diff = fmod(segAngle - ptrAngle, TWO_PI_F);
-                if(diff<0) diff+=TWO_PI_F;
-                if(diff>TWO_PI_F) diff-=TWO_PI_F;
-                if(diff>TWO_PI_F/2) diff=TWO_PI_F-diff;
-                if(diff<bestDiff){bestDiff=diff;bestIdx=i;}
-            }
-            result=WHEEL_ORDER[bestIdx];
-            // Redraw final wheel with highlight
             auto& d=M5Cardputer.Display;
-            d.fillCircle(WCX,WCY,WR_OUT+2,C_BG);
+            d.fillEllipse(WCX,WCY,WR_OA+2,WR_OB+2,C_BG);
+            drawWheel(wheelAngle);
+        }
+
+        if(spinTicks>=totalTicks){
+            int bestIdx=pocketUnderPointer();
+            result=WHEEL_ORDER[bestIdx];
+
+            auto& d=M5Cardputer.Display;
+            d.fillEllipse(WCX,WCY,WR_OA+2,WR_OB+2,C_BG);
             drawWheel(wheelAngle, bestIdx);
 
             bool win=betWins(betType,result);
-            int payout = win ? bet*BET_PAY[betType] : 0;
+            int payout=win?bet*BET_PAY[betType]:0;
             credits+=payout;
-            uint16_t nc=(result==0)?C_ZERO:(isRed(result)?C_RED:C_TXT);
+
+            const char* col_name=result==0?"GREEN":(isRed(result)?"RED":"BLACK");
             if(win){
-                snprintf(msg,sizeof(msg),"  %d  %s  WIN! +%d coins",result,isRed(result)?"RED":"BLACK",payout);
+                snprintf(msg,sizeof(msg),"%d %s  WIN! +%d coins",result,col_name,payout);
                 msgCol=C_GOLD; sndWin();
             } else {
-                snprintf(msg,sizeof(msg),"  %d  %s  No win.",result,result==0?"GREEN":(isRed(result)?"RED":"BLACK"));
-                msgCol=nc; sndLose();
+                snprintf(msg,sizeof(msg),"%d %s  No win.",result,col_name);
+                msgCol=(result==0)?C_ZERO:(isRed(result)?C_RED:C_DIM); sndLose();
             }
             rlState=RESULT;
-            drawHUD(); drawMsg();
+            drawHUD(); drawMsg(); drawFooter();
             if(credits<=0){snprintf(msg,sizeof(msg),"BROKE! SPC=reset Q=menu");msgCol=C_RED;drawMsg();}
-            // Footer hint
-            auto& d2=M5Cardputer.Display;
-            d2.fillRect(0,WCY+WR_OUT+2,240,6,C_BG);
-            d2.setTextSize(1); d2.setTextColor(0x39E7);
-            const char* h="SPC=AGAIN  A/D=BetType  Q=MENU";
-            d2.setCursor((240-d2.textWidth(h))/2,WCY+WR_OUT+2); d2.print(h);
         }
     }
 
-    delay(30); // faster for smooth wheel spin
+    delay(30);
     return true;
 }
 
