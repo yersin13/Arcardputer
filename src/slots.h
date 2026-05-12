@@ -1,5 +1,6 @@
 #pragma once
 #include <M5Cardputer.h>
+#include "persist.h"
 #include "img_cherry.h"
 #include "img_lemon.h"
 #include "img_orange.h"
@@ -33,7 +34,7 @@ static const uint16_t C_GOLD = 0xFEA0;
 static const uint16_t C_RED  = 0xF800;
 static const uint16_t C_GRN  = 0x07E0;
 
-static int  credits, bet;
+static int  bet;
 static int  result[3];
 static char winMsg[48];
 static uint16_t winCol;
@@ -45,6 +46,7 @@ static int  spinsSinceLoss;
 static bool reelStopped[3];
 static bool soundOn  = false;
 static int  soundVol = 100;
+static int  idleFrame = 0;
 
 static void sndTick()    { if (!soundOn) return; M5Cardputer.Speaker.tone(1200, 18); }
 static void sndStop()    { if (!soundOn) return; M5Cardputer.Speaker.tone(800, 40); }
@@ -94,7 +96,7 @@ static void drawHUD() {
     d.setTextSize(1);
     char left[24], right[24];
     snprintf(left, sizeof(left), "BET: %d", bet);
-    snprintf(right, sizeof(right), "CREDITS: %d", credits);
+    snprintf(right, sizeof(right), "CREDITS: %d", Persist::credits);
     if (consecWins >= 2) {
         char s[10]; snprintf(s, sizeof(s), " x%d!", consecWins);
         strncat(left, s, sizeof(left)-strlen(left)-1);
@@ -155,7 +157,7 @@ static void evalResult() {
     } else {
         consecWins = 0; spinsSinceLoss++;
         if (spinsSinceLoss>0 && spinsSinceLoss%14==0) {
-            lastWin=3; credits+=lastWin;
+            lastWin=3; Persist::credits+=lastWin;
             snprintf(winMsg,sizeof(winMsg),"Consolation +3 credits!"); winCol=C_DIM;
         } else {
             if (r0==0||r1==0||r2==0) snprintf(winMsg,sizeof(winMsg),"So close! 7 slipped by...");
@@ -163,27 +165,30 @@ static void evalResult() {
             winCol = C_DIM;
         }
     }
-    credits += lastWin;
+    Persist::credits += lastWin;
+    Persist::updateCredits();
 }
 
 static void startSpin() {
-    if (credits < bet) {
+    if (Persist::credits < bet) {
         snprintf(winMsg,sizeof(winMsg),"Not enough credits!"); winCol=C_RED; drawMsg(); return;
     }
-    credits -= bet;
+    Persist::credits -= bet;
+    Persist::updateCredits();
     result[0]=random(NSYM); result[1]=random(NSYM); result[2]=random(NSYM);
     stopAt[0]=18+random(8); stopAt[1]=stopAt[0]+18+random(8); stopAt[2]=stopAt[1]+18+random(8);
     reelStopped[0]=reelStopped[1]=reelStopped[2]=false;
-    spinTick=0; winMsg[0]='\0'; gState=SPINNING;
+    spinTick=0; winMsg[0]='\0'; gState=SPINNING; idleFrame=0;
     drawHUD(); drawMsg();
 }
 
 static void resetGame() {
-    credits=200; bet=1; consecWins=0; spinsSinceLoss=0;
+    Persist::credits = max(Persist::credits, 100);
+    bet=1; consecWins=0; spinsSinceLoss=0;
     result[0]=result[1]=result[2]=0;
     spinSym[0]=spinSym[1]=spinSym[2]=0;
     reelStopped[0]=reelStopped[1]=reelStopped[2]=false;
-    winMsg[0]='\0'; winCol=C_DIM; gState=IDLE;
+    winMsg[0]='\0'; winCol=C_DIM; gState=IDLE; idleFrame=0;
     M5Cardputer.Display.fillScreen(C_BG);
     drawHeader(); drawHUD();
     for (int i=0;i<3;i++) drawReel(i,0,false);
@@ -193,6 +198,7 @@ static void resetGame() {
 
 void init() {
     M5Cardputer.Speaker.setVolume(soundVol);
+    idleFrame=0;
     resetGame();
 }
 
@@ -228,10 +234,24 @@ bool tick() {
             }
         }
         if (spinTick>=stopAt[2]) {
-            evalResult(); drawHUD(); drawMsg();
-            if (credits<=0) {
+            int preSpin = Persist::credits;
+            evalResult();
+            if (lastWin > 0) {
+                int target = Persist::credits;
+                int steps = min(20, lastWin);
+                for (int s = 0; s <= steps; s++) {
+                    Persist::credits = preSpin + (lastWin * s / steps);
+                    drawHUD();
+                    delay(35);
+                }
+                Persist::credits = target;
+            }
+            drawHUD(); drawMsg();
+            if (Persist::credits<=0) {
                 snprintf(winMsg,sizeof(winMsg),"BROKE! R=reset  Q=menu"); winCol=C_RED;
-                drawMsg(); sndBroke(); gState=GAMEOVER;
+                drawMsg(); sndBroke();
+                Persist::credits=100; Persist::save();
+                gState=GAMEOVER;
             } else if (lastWin>0) {
                 flashTick=0;
                 bool jackpot=(result[0]==result[1]&&result[1]==result[2]&&result[0]==0);
@@ -260,6 +280,16 @@ bool tick() {
     }
 
     delay(50);
+
+    if (gState==IDLE) {
+        idleFrame++;
+        if (idleFrame%6==0) {
+            int r=(idleFrame/6)%3;
+            spinSym[r]=(spinSym[r]+1)%NSYM;
+            drawReel(r,spinSym[r],false);
+        }
+    }
+
     return true;
 }
 

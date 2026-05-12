@@ -1,5 +1,6 @@
 #pragma once
 #include <M5Cardputer.h>
+#include "persist.h"
 
 namespace HiLo {
 
@@ -69,7 +70,7 @@ static void drawBigCard(Card c, bool hidden=false) {
 // ── State ─────────────────────────────────────────────────────────────────
 static int   deck[52], deckTop;
 static Card  current, next;
-static int   credits, bet, pot, chain;
+static int   bet, pot, chain;
 static char  msg[56]; static uint16_t msgCol;
 static bool  soundOn=false; static int soundVol=100;
 static enum  { BETTING, GUESSING, RESULT } hlState;
@@ -100,7 +101,7 @@ static void drawHUD() {
     d.fillRect(0,16,240,11,C_BG); d.setTextSize(1);
     char l[24],r[24];
     snprintf(l,sizeof(l),"BET:%d  POT:%d",bet,pot);
-    snprintf(r,sizeof(r),"CREDITS:%d",credits);
+    snprintf(r,sizeof(r),"CREDITS:%d",Persist::credits);
     d.setTextColor(chain>=2?C_GOLD:C_TXT); d.setCursor(4,17); d.print(l);
     d.setTextColor(C_TXT); d.setCursor(240-d.textWidth(r)-4,17); d.print(r);
 }
@@ -135,8 +136,10 @@ static void fullRedraw() {
 }
 
 static void startRound() {
-    if(credits<bet){snprintf(msg,sizeof(msg),"Not enough credits!");msgCol=C_RED;drawMsg();return;}
-    credits-=bet; pot=bet; chain=0;
+    if(Persist::credits<bet){snprintf(msg,sizeof(msg),"Not enough credits!");msgCol=C_RED;drawMsg();return;}
+    Persist::credits-=bet;
+    Persist::updateCredits();
+    pot=bet; chain=0;
     buildDeck(); current=pullCard(); next=pullCard();
     hlState=GUESSING; msg[0]='\0';
     fullRedraw();
@@ -179,7 +182,10 @@ static void guess(bool wantHigh) {
         sndWrong(); chain=0; pot=0;
         hlState=RESULT;
         drawHUD(); drawChain(); drawMsg(); drawFooter();
-        if(credits<=0){snprintf(msg,sizeof(msg),"BROKE!  SPC=reset  Q=menu");msgCol=C_RED;drawMsg();}
+        if(Persist::credits<=0){
+            snprintf(msg,sizeof(msg),"BROKE!  SPC=reset  Q=menu");msgCol=C_RED;drawMsg();
+            Persist::credits=100; Persist::save();
+        }
     }
 }
 
@@ -187,14 +193,16 @@ static void cashOut() {
     if(hlState!=GUESSING||chain==0){
         snprintf(msg,sizeof(msg),"Nothing to cash out!"); msgCol=C_DIM; drawMsg(); return;
     }
-    credits+=pot; sndCash();
+    Persist::credits+=pot;
+    Persist::updateCredits();
+    sndCash();
     snprintf(msg,sizeof(msg),"Cashed out %d coins!",pot); msgCol=C_GOLD;
     pot=0; chain=0; hlState=RESULT;
     drawHUD(); drawChain(); drawMsg(); drawFooter();
 }
 
 void init() {
-    credits=100; bet=5; pot=0; chain=0; msg[0]='\0'; msgCol=C_DIM; hlState=BETTING;
+    bet=5; pot=0; chain=0; msg[0]='\0'; msgCol=C_DIM; hlState=BETTING;
     M5Cardputer.Speaker.setVolume(soundVol);
     buildDeck(); current=pullCard(); next=pullCard();
     auto& d=M5Cardputer.Display;
@@ -226,7 +234,7 @@ bool tick() {
         if(act){
             if(hlState==BETTING) startRound();
             else if(hlState==RESULT){
-                if(credits<=0){credits=100;bet=min(bet,5);}
+                if(Persist::credits<=0){Persist::credits=100;Persist::save();bet=min(bet,5);}
                 hlState=BETTING; msg[0]='\0'; pot=0; chain=0;
                 auto& d=M5Cardputer.Display;
                 d.fillScreen(C_BG); drawHeader(); drawHUD();

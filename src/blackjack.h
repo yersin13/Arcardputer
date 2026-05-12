@@ -1,5 +1,6 @@
 #pragma once
 #include <M5Cardputer.h>
+#include "persist.h"
 
 namespace Blackjack {
 
@@ -89,7 +90,7 @@ static Card  deck[52];
 static int   deckTop;
 static Card  pHand[11], dHand[11];
 static int   pCount, dCount;
-static int   credits, bet, origBet;
+static int   bet, origBet;
 static char  msg[48];
 static uint16_t msgCol;
 static bool  soundOn  = false;
@@ -138,7 +139,7 @@ static void drawHUD() {
     d.fillRect(0,17,240,11,C_BG); d.setTextSize(1);
     char l[20], r[24];
     snprintf(l,sizeof(l),"BET: %d",bet);
-    snprintf(r,sizeof(r),"CREDITS: %d",credits);
+    snprintf(r,sizeof(r),"CREDITS: %d",Persist::credits);
     d.setTextColor(C_TXT);
     d.setCursor(4,18); d.print(l);
     d.setCursor(240-d.textWidth(r)-4,18); d.print(r);
@@ -242,18 +243,23 @@ static void evalAndShow() {
         snprintf(msg,sizeof(msg),"Bust! You lose."); msgCol=C_DIM; sndLose();
     } else if (pBJ && !dBJ) {
         int win = bet + bet/2;
-        credits += bet + win;
+        Persist::credits += bet + win;
+        Persist::updateCredits();
         snprintf(msg,sizeof(msg),"Blackjack! +%d",win); msgCol=C_GOLD; sndWin();
+        Persist::unlock(Persist::ACH_BLACKJACK);
     } else if (dBJ && !pBJ) {
         snprintf(msg,sizeof(msg),"Dealer Blackjack. You lose."); msgCol=C_DIM; sndLose();
     } else if (dv>21) {
-        credits += bet*2;
+        Persist::credits += bet*2;
+        Persist::updateCredits();
         snprintf(msg,sizeof(msg),"Dealer busts! You win +%d",bet*2); msgCol=C_GRN; sndWin();
     } else if (p>dv) {
-        credits += bet*2;
+        Persist::credits += bet*2;
+        Persist::updateCredits();
         snprintf(msg,sizeof(msg),"You win! %d vs %d  +%d",p,dv,bet*2); msgCol=C_GRN; sndWin();
     } else if (p==dv) {
-        credits += bet;
+        Persist::credits += bet;
+        Persist::updateCredits();
         snprintf(msg,sizeof(msg),"Push — %d vs %d. Bet returned.",p,dv); msgCol=C_TXT;
     } else {
         snprintf(msg,sizeof(msg),"Dealer wins. %d vs %d",dv,p); msgCol=C_DIM; sndLose();
@@ -264,7 +270,10 @@ static void evalAndShow() {
     flashWinner(PLAYER_Y, playerWon);
     bjState=RESULT;
     drawHUD(); drawMsg(); drawFooter();
-    if (credits<=0){ snprintf(msg,sizeof(msg),"BROKE!  SPC=reset  Q=menu"); msgCol=C_RED; drawMsg(); }
+    if (Persist::credits<=0){
+        snprintf(msg,sizeof(msg),"BROKE!  SPC=reset  Q=menu"); msgCol=C_RED; drawMsg();
+        Persist::credits=100; Persist::save();
+    }
 }
 
 static void dealerPlay() {
@@ -284,8 +293,9 @@ static void dealerPlay() {
 }
 
 static void deal() {
-    if (credits<bet){ snprintf(msg,sizeof(msg),"Not enough credits!"); msgCol=C_RED; drawMsg(); return; }
-    credits -= bet; origBet = bet;
+    if (Persist::credits<bet){ snprintf(msg,sizeof(msg),"Not enough credits!"); msgCol=C_RED; drawMsg(); return; }
+    Persist::credits -= bet; origBet = bet;
+    Persist::updateCredits();
     pCount=0; dCount=0;
     msg[0]='\0'; bjState=PLAYER_TURN;
     drawHUD();
@@ -303,7 +313,7 @@ static void deal() {
 
 // ── Public ────────────────────────────────────────────────────────────────
 void init() {
-    credits=100; bet=5; origBet=5; msg[0]='\0'; msgCol=C_DIM; bjState=BETTING;
+    bet=5; origBet=5; msg[0]='\0'; msgCol=C_DIM; bjState=BETTING;
     shuffleDeck();
     M5Cardputer.Speaker.setVolume(soundVol);
     auto& d = M5Cardputer.Display;
@@ -339,8 +349,9 @@ bool tick() {
                     }
                 }
                 if (c=='s'||c=='S') dealerPlay();
-                if ((c=='d'||c=='D') && pCount==2 && credits>=bet) {
-                    credits-=bet; bet*=2;
+                if ((c=='d'||c=='D') && pCount==2 && Persist::credits>=bet) {
+                    Persist::credits-=bet; bet*=2;
+                    Persist::updateCredits();
                     pHand[pCount++]=dealCard(); sndCard();
                     drawHUD(); drawHandRow(pHand,pCount,PLAYER_Y,false);
                     dealerPlay();
@@ -351,7 +362,7 @@ bool tick() {
             if (bjState==BETTING) {
                 deal();
             } else if (bjState==RESULT) {
-                if (credits<=0){ credits=100; bet=min(origBet,5); }
+                if (Persist::credits<=0){ Persist::credits=100; Persist::save(); bet=min(origBet,5); }
                 bet=origBet; bjState=BETTING; msg[0]='\0';
                 auto& d = M5Cardputer.Display;
                 d.fillScreen(C_BG);

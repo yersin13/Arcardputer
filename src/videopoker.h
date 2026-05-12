@@ -1,5 +1,6 @@
 #pragma once
 #include <M5Cardputer.h>
+#include "persist.h"
 
 namespace VideoPoker {
 
@@ -104,7 +105,7 @@ static int evalHand(Card h[5]) {
 static Card  deck[52], hand[5];
 static int   deckTop;
 static bool  held[5];
-static int   credits, bet;
+static int   bet;
 static char  msg[48]; static uint16_t msgCol;
 static bool  soundOn=false; static int soundVol=100;
 static enum  { BETTING, DEALT, RESULT } vpState;
@@ -131,7 +132,8 @@ static void drawHUD() {
     auto& d=M5Cardputer.Display;
     d.fillRect(0,17,240,11,C_BG); d.setTextSize(1);
     char l[20],r[24];
-    snprintf(l,sizeof(l),"BET: %d",bet); snprintf(r,sizeof(r),"CREDITS: %d",credits);
+    snprintf(l,sizeof(l),"BET: %d",bet);
+    snprintf(r,sizeof(r),"CREDITS: %d",Persist::credits);
     d.setTextColor(C_TXT); d.setCursor(4,18); d.print(l);
     d.setCursor(240-d.textWidth(r)-4,18); d.print(r);
 }
@@ -164,8 +166,9 @@ static void drawFooter() {
 }
 
 static void dealHand() {
-    if(credits<bet){snprintf(msg,sizeof(msg),"Not enough credits!");msgCol=C_RED;drawMsg();return;}
-    credits-=bet;
+    if(Persist::credits<bet){snprintf(msg,sizeof(msg),"Not enough credits!");msgCol=C_RED;drawMsg();return;}
+    Persist::credits-=bet;
+    Persist::updateCredits();
     for(int i=0;i<5;i++){held[i]=false;}
     // Animate: deal one card at a time
     M5Cardputer.Display.fillRect(0,CARD_Y,240,CH+12,C_BG);
@@ -195,7 +198,9 @@ static void redraw() {
     // Evaluate
     int rank=evalHand(hand);
     int win=HAND_PAY[rank]*bet;
-    credits+=win;
+    Persist::credits+=win;
+    Persist::updateCredits();
+    if(rank==9) Persist::unlock(Persist::ACH_ROYAL_FLUSH);
     if(win>0){
         snprintf(msg,sizeof(msg),"%s  +%d coins!",HAND_NAME[rank],win);
         msgCol=(rank>=7?C_GOLD:(rank>=4?C_CYN:C_GRN)); sndWin();
@@ -212,11 +217,14 @@ static void redraw() {
     }
     vpState=RESULT;
     drawHUD(); drawMsg(); drawFooter();
-    if(credits<=0){snprintf(msg,sizeof(msg),"BROKE!  SPC=reset  Q=menu");msgCol=C_RED;drawMsg();}
+    if(Persist::credits<=0){
+        snprintf(msg,sizeof(msg),"BROKE!  SPC=reset  Q=menu");msgCol=C_RED;drawMsg();
+        Persist::credits=100; Persist::save();
+    }
 }
 
 void init() {
-    credits=100; bet=5; msg[0]='\0'; msgCol=C_DIM; vpState=BETTING;
+    bet=5; msg[0]='\0'; msgCol=C_DIM; vpState=BETTING;
     shuffle();
     M5Cardputer.Speaker.setVolume(soundVol);
     auto& d=M5Cardputer.Display;
@@ -249,7 +257,7 @@ bool tick() {
             if(vpState==BETTING)      dealHand();
             else if(vpState==DEALT)   redraw();
             else if(vpState==RESULT){
-                if(credits<=0){credits=100;bet=min(bet,5);}
+                if(Persist::credits<=0){Persist::credits=100;Persist::save();bet=min(bet,5);}
                 vpState=BETTING; msg[0]='\0';
                 auto& d=M5Cardputer.Display;
                 d.fillScreen(C_BG); drawHeader(); drawHUD();

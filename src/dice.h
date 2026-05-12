@@ -1,5 +1,6 @@
 #pragma once
 #include <M5Cardputer.h>
+#include "persist.h"
 
 namespace Dice {
 
@@ -66,7 +67,7 @@ static void drawAllDice() {
 static int  diceVals[5];
 static bool locked[5];
 static int  rollsLeft;
-static int  credits, bet;
+static int  bet;
 static char msg[48];
 static uint16_t msgCol;
 static bool soundOn  = false;
@@ -118,7 +119,7 @@ static void drawHUD() {
     d.fillRect(0,17,240,11,C_BG); d.setTextSize(1);
     char l[20],r[24];
     snprintf(l,sizeof(l),"BET: %d",bet);
-    snprintf(r,sizeof(r),"CREDITS: %d",credits);
+    snprintf(r,sizeof(r),"CREDITS: %d",Persist::credits);
     d.setTextColor(C_TXT);
     d.setCursor(4,18); d.print(l);
     d.setCursor(240-d.textWidth(r)-4,18); d.print(r);
@@ -188,8 +189,9 @@ static void rollUnlocked() {
 
 // ── Game actions ──────────────────────────────────────────────────────────
 static void startRolling() {
-    if (credits<bet){ snprintf(msg,sizeof(msg),"Not enough credits!"); msgCol=C_RED; drawMsg(); return; }
-    credits -= bet;
+    if (Persist::credits<bet){ snprintf(msg,sizeof(msg),"Not enough credits!"); msgCol=C_RED; drawMsg(); return; }
+    Persist::credits -= bet;
+    Persist::updateCredits();
     for (int i=0;i<5;i++){ locked[i]=false; diceVals[i]=1+random(6); }
     rollsLeft = 2;
     dState = ROLLING;
@@ -202,7 +204,9 @@ static void startRolling() {
 static void scoreRound() {
     char desc[32]; int mult=scoreHand(desc);
     int won = mult * bet;
-    credits += won;
+    Persist::credits += won;
+    Persist::updateCredits();
+    if (mult==50) Persist::unlock(Persist::ACH_YAHTZEE);
     if (won>0){ snprintf(msg,sizeof(msg),"%s  +%d coins!",desc,won); msgCol=C_GOLD; sndWin(); }
     else      { snprintf(msg,sizeof(msg),"No combo. Better luck!"); msgCol=C_DIM; sndLose(); }
     dState = SCORED;
@@ -212,13 +216,16 @@ static void scoreRound() {
     auto& d = M5Cardputer.Display;
     d.fillRect(0,80,240,25,C_BG);  // clear rolls + score preview
     drawHUD(); drawScorePreview(); drawFooter();
-    if (credits<=0){ snprintf(msg,sizeof(msg),"BROKE!  SPC=reset  Q=menu"); msgCol=C_RED; }
+    if (Persist::credits<=0){
+        snprintf(msg,sizeof(msg),"BROKE!  SPC=reset  Q=menu"); msgCol=C_RED;
+        Persist::credits=100; Persist::save();
+    }
     drawMsg();
 }
 
 // ── Public ────────────────────────────────────────────────────────────────
 void init() {
-    credits=100; bet=5; msg[0]='\0'; msgCol=C_DIM; dState=BETTING;
+    bet=5; msg[0]='\0'; msgCol=C_DIM; dState=BETTING;
     for (int i=0;i<5;i++){ diceVals[i]=i+1; locked[i]=false; }
     M5Cardputer.Speaker.setVolume(soundVol);
     auto& d = M5Cardputer.Display;
@@ -263,7 +270,7 @@ bool tick() {
                     else              drawFooter();
                 }
             } else if (dState==SCORED) {
-                if (credits<=0){ credits=100; bet=5; }
+                if (Persist::credits<=0){ Persist::credits=100; Persist::save(); bet=5; }
                 dState=BETTING;
                 for (int i=0;i<5;i++){ diceVals[i]=i+1; locked[i]=false; }
                 msg[0]='\0';

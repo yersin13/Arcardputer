@@ -1,6 +1,7 @@
 #pragma once
 #include <M5Cardputer.h>
 #include <math.h>
+#include "persist.h"
 
 namespace Roulette {
 
@@ -107,7 +108,7 @@ static bool betWins(int t, int n){
 }
 
 // ── State ─────────────────────────────────────────────────────────────────
-static int   credits, bet, betType, result;
+static int   bet, betType, result;
 static float wheelAngle, maxSpeed;
 static int   spinTicks, totalTicks;
 static char  msg[56]; static uint16_t msgCol;
@@ -129,7 +130,7 @@ static void drawHUD() {
     d.fillRect(0,16,240,12,C_BG); d.setTextSize(1);
     char l[30],r[22];
     snprintf(l,sizeof(l),"BET:%d on %s",bet,BET_NAMES[betType]);
-    snprintf(r,sizeof(r),"CREDITS:%d",credits);
+    snprintf(r,sizeof(r),"CREDITS:%d",Persist::credits);
     uint16_t lc=(betType==BET_RED)?C_RED:(betType==BET_BLACK?C_DIM:C_TXT);
     d.setTextColor(lc); d.setCursor(4,17); d.print(l);
     d.setTextColor(C_TXT); d.setCursor(240-d.textWidth(r)-4,17); d.print(r);
@@ -172,8 +173,9 @@ static int pocketUnderPointer() {
 }
 
 static void startSpin() {
-    if(credits<bet){snprintf(msg,sizeof(msg),"Not enough credits!");msgCol=C_RED;drawMsg();return;}
-    credits-=bet;
+    if(Persist::credits<bet){snprintf(msg,sizeof(msg),"Not enough credits!");msgCol=C_RED;drawMsg();return;}
+    Persist::credits-=bet;
+    Persist::updateCredits();
     totalTicks = 100 + random(60);
     maxSpeed   = 0.42f + random(20)*0.012f;
     spinTicks  = 0;
@@ -182,7 +184,7 @@ static void startSpin() {
 }
 
 void init() {
-    credits=100; bet=5; betType=BET_RED; result=0;
+    bet=5; betType=BET_RED; result=0;
     wheelAngle=0.0f; maxSpeed=0.5f; spinTicks=0; totalTicks=0;
     msg[0]='\0'; msgCol=C_DIM; rlState=BETTING;
     M5Cardputer.Speaker.setVolume(soundVol);
@@ -210,7 +212,7 @@ bool tick() {
         if(act){
             if(rlState==BETTING) startSpin();
             else if(rlState==RESULT){
-                if(credits<=0){credits=100;bet=min(bet,5);}
+                if(Persist::credits<=0){Persist::credits=100;Persist::save();bet=min(bet,5);}
                 rlState=BETTING; msg[0]='\0';
                 redrawAll();
                 snprintf(msg,sizeof(msg),"Place your bet and spin!"); msgCol=C_DIM; drawMsg();
@@ -230,11 +232,27 @@ bool tick() {
             auto& d=M5Cardputer.Display;
             d.fillEllipse(WCX,WCY,WR_OA+2,WR_OB+2,C_BG);
             drawWheel(wheelAngle);
+
+            // Anticipation display in last 30 ticks
+            if(spinTicks >= totalTicks-30 && spinTicks < totalTicks){
+                int potIdx=pocketUnderPointer();
+                int potNum=WHEEL_ORDER[potIdx];
+                bool potWin=betWins(betType,potNum);
+                auto& d2=M5Cardputer.Display;
+                d2.fillRect(0,112,240,10,C_BG);
+                if(potWin){
+                    int potPay=bet*BET_PAY[betType];
+                    char pb[24]; snprintf(pb,sizeof(pb),">>> +%d <<<",potPay);
+                    d2.setTextSize(1); d2.setTextColor(C_GOLD);
+                    d2.setCursor((240-d2.textWidth(pb))/2,113); d2.print(pb);
+                }
+            }
         }
 
         if(spinTicks>=totalTicks){
             int bestIdx=pocketUnderPointer();
             result=WHEEL_ORDER[bestIdx];
+            if(result==0) Persist::unlock(Persist::ACH_LUCKY_ZERO);
 
             auto& d=M5Cardputer.Display;
             d.fillEllipse(WCX,WCY,WR_OA+2,WR_OB+2,C_BG);
@@ -242,7 +260,8 @@ bool tick() {
 
             bool win=betWins(betType,result);
             int payout=win?bet*BET_PAY[betType]:0;
-            credits+=payout;
+            Persist::credits+=payout;
+            Persist::updateCredits();
 
             const char* col_name=result==0?"GREEN":(isRed(result)?"RED":"BLACK");
             if(win){
@@ -254,7 +273,10 @@ bool tick() {
             }
             rlState=RESULT;
             drawHUD(); drawMsg(); drawFooter();
-            if(credits<=0){snprintf(msg,sizeof(msg),"BROKE! SPC=reset Q=menu");msgCol=C_RED;drawMsg();}
+            if(Persist::credits<=0){
+                snprintf(msg,sizeof(msg),"BROKE! SPC=reset Q=menu");msgCol=C_RED;drawMsg();
+                Persist::credits=100; Persist::save();
+            }
         }
     }
 

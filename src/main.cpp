@@ -1,4 +1,6 @@
 #include <M5Cardputer.h>
+#include "persist.h"
+#include "intro.h"
 #include "slots.h"
 #include "blackjack.h"
 #include "dice.h"
@@ -10,9 +12,11 @@ static const uint16_t C_BG   = 0x0000;
 static const uint16_t C_GOLD = 0xFEA0;
 static const uint16_t C_TXT  = 0xFFFF;
 static const uint16_t C_DIM  = 0x4208;
+static const uint16_t C_RED  = 0xF800;
 
 static enum { MENU, GAME_SLOTS, GAME_BLACKJACK, GAME_DICE, GAME_VIDEOPOKER, GAME_HILO, GAME_ROULETTE } appState = MENU;
 static int menuSel = 0;
+static bool menuSoundOn = false;
 
 static const int NGAMES = 6;
 
@@ -32,7 +36,7 @@ static const GameEntry GAMES[NGAMES] = {
     { "ROULETTE",      "European wheel  37 pockets",0xF81F, "RO" },  // magenta
 };
 
-// 2-column × 3-row grid
+// 2-column x 3-row grid
 // Each cell: 116px wide, 34px tall, with 4px gap
 // Grid starts at x=2, y=20; cols at x=2, x=122; rows spaced 38px
 
@@ -105,13 +109,24 @@ static void drawMenu() {
         drawMenuCell(i, i == menuSel);
     }
 
-    // Footer
-    d.fillRect(0, 132, 240, 3, 0x0821);
-    d.fillRect(0, 132, 240, 3, C_DIM);
-    d.setTextSize(1); d.setTextColor(0x39E7);
-    const char* hint = "Arrows / +- : select     SPACE / Enter : play";
-    d.setCursor((240 - d.textWidth(hint)) / 2, 128);
-    d.print(hint);
+    // Footer — session arc
+    d.fillRect(0, 126, 240, 9, 0x0821);
+    d.setTextSize(1);
+    if (Persist::credits < 30) {
+        char footer[56];
+        snprintf(footer, sizeof(footer), "DOWN TO THE WIRE!  Best:%d  SPC=play", Persist::personalBest);
+        d.setTextColor(C_RED);
+        d.setCursor((240 - d.textWidth(footer)) / 2, 128);
+        d.print(footer);
+    } else {
+        int goal = min(Persist::sessionStart * 3, 2000);
+        char footer[56];
+        snprintf(footer, sizeof(footer), "Cr:%d  Goal:%d  Best:%d  SPC=play",
+                 Persist::credits, goal, Persist::personalBest);
+        d.setTextColor(0x39E7);
+        d.setCursor((240 - d.textWidth(footer)) / 2, 128);
+        d.print(footer);
+    }
 }
 
 void setup() {
@@ -121,6 +136,9 @@ void setup() {
     SPI.begin(40, 39, 14, 12);
     M5Cardputer.Display.setRotation(1);
     randomSeed(analogRead(0) ^ millis());
+    Persist::load();
+    Persist::newDay();
+    Intro::show();
     drawMenu();
 }
 
@@ -133,6 +151,10 @@ void loop() {
             bool launch = st.enter;
             for (char c : st.word) {
                 if (c == ' ') launch = true;
+                // Toggle menu sound
+                if (c == 'm' || c == 'M') {
+                    menuSoundOn = !menuSoundOn;
+                }
                 // Right / Down / + moves forward
                 if (c == '+' || c == '=' || c == 'd' || c == 'D') {
                     int prev = menuSel;
@@ -162,6 +184,29 @@ void loop() {
                 }
             }
             if (launch) {
+                // Entry fanfare: flash selected cell 3x gold
+                for (int f = 0; f < 3; f++) {
+                    drawMenuCell(menuSel, true);   // selected (gold)
+                    delay(80);
+                    // flash: draw with gold bg briefly
+                    auto& d = M5Cardputer.Display;
+                    int col = menuSel % 2;
+                    int row = menuSel / 2;
+                    int cx = GRID_X[col];
+                    int cy = GRID_Y0 + row * CELL_YSTEP;
+                    d.drawRect(cx, cy, CELL_W, CELL_H, C_GOLD);
+                    d.drawRect(cx+1, cy+1, CELL_W-2, CELL_H-2, C_GOLD);
+                    delay(80);
+                    drawMenuCell(menuSel, false);  // deselected
+                    delay(80);
+                }
+                drawMenuCell(menuSel, true);
+                if (menuSoundOn) {
+                    M5Cardputer.Speaker.tone(880, 40); delay(50);
+                    M5Cardputer.Speaker.tone(1100, 60);
+                }
+                Persist::sessionStart = Persist::credits;
+                Persist::sessionPeak  = Persist::credits;
                 switch (menuSel) {
                     case 0: Slots::init();      appState = GAME_SLOTS;      break;
                     case 1: Blackjack::init();  appState = GAME_BLACKJACK;  break;
@@ -187,6 +232,17 @@ void loop() {
     }
 
     if (!running) {
+        // Session story
+        auto& d = M5Cardputer.Display;
+        d.fillRect(0, 58, 240, 18, 0x0821);
+        d.setTextSize(1); d.setTextColor(C_GOLD);
+        char story[56];
+        snprintf(story, sizeof(story), "Session peak: %d  |  Out with: %d",
+                 Persist::sessionPeak, Persist::credits);
+        d.setCursor((240 - d.textWidth(story)) / 2, 63);
+        d.print(story);
+        delay(1500);
+        Persist::save();
         appState = MENU;
         drawMenu();
     }
