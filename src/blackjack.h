@@ -9,12 +9,82 @@ static const uint16_t C_DIM  = 0x4208;
 static const uint16_t C_GOLD = 0xFEA0;
 static const uint16_t C_RED  = 0xF800;
 static const uint16_t C_GRN  = 0x07E0;
+static const uint16_t C_CARD = 0xFFFF;  // card face (white)
+static const uint16_t C_BACK = 0x000F;  // card back (dark blue)
 
-// Card: val 1-13 (1=Ace,11=J,12=Q,13=K), suit 0-3 (S H D C)
+// ── Card geometry ─────────────────────────────────────────────────────────
+// Max 8 cards visible per hand; card 26x36, 4px gap → 8*26+7*4 = 236px
+static const int CW = 26;  // card width
+static const int CH = 36;  // card height
+static const int CG = 4;   // gap between cards
+static const int CX0 = 2;  // start x
+
+static const int DEALER_Y = 33;  // top of dealer cards
+static const int PLAYER_Y = 81;  // top of player cards
+
+// ── Suit geometry helpers ─────────────────────────────────────────────────
+// suit: 0=Spades 1=Hearts 2=Diamonds 3=Clubs
+static const uint16_t SUIT_COL[4] = { 0x2104, C_RED, C_RED, 0x2104 }; // dark-gray, red, red, dark-gray
+
+static void drawSuit(int cx, int cy, int suit, uint16_t col) {
+    auto& d = M5Cardputer.Display;
+    switch (suit) {
+        case 0: // Spades: upside-down heart + stem
+            d.fillCircle(cx-3, cy-1, 3, col);
+            d.fillCircle(cx+3, cy-1, 3, col);
+            d.fillTriangle(cx-5,cy+1, cx+5,cy+1, cx,cy+6, col);
+            d.fillRect(cx-1, cy+5, 3, 3, col);
+            break;
+        case 1: // Hearts
+            d.fillCircle(cx-3, cy-1, 3, col);
+            d.fillCircle(cx+3, cy-1, 3, col);
+            d.fillTriangle(cx-5,cy+1, cx+5,cy+1, cx,cy+7, col);
+            break;
+        case 2: // Diamonds
+            d.fillTriangle(cx,cy-5, cx+5,cy, cx-5,cy, col);
+            d.fillTriangle(cx-5,cy, cx+5,cy, cx,cy+5, col);
+            break;
+        case 3: // Clubs: 3 circles + stem
+            d.fillCircle(cx,   cy-3, 3, col);
+            d.fillCircle(cx-4, cy+1, 3, col);
+            d.fillCircle(cx+4, cy+1, 3, col);
+            d.fillRect(cx-1, cy+3, 3, 4, col);
+            break;
+    }
+}
+
+// ── Card drawing ──────────────────────────────────────────────────────────
 struct Card { int val; int suit; };
-static const char*     SUITS[4]    = { "S","H","D","C" };
-static const uint16_t  SUIT_COL[4] = { C_TXT, C_RED, C_RED, C_TXT };
 
+static void drawCard(int x, int y, Card c, bool hidden=false) {
+    auto& d = M5Cardputer.Display;
+    if (hidden) {
+        // Card back: dark blue with subtle pattern
+        d.fillRoundRect(x, y, CW, CH, 3, C_BACK);
+        d.drawRoundRect(x, y, CW, CH, 3, C_DIM);
+        for (int py=y+4; py<y+CH-3; py+=4)
+            d.drawFastHLine(x+3, py, CW-6, 0x0018);
+        return;
+    }
+    uint16_t sc = SUIT_COL[c.suit];
+    d.fillRoundRect(x, y, CW, CH, 3, C_CARD);
+    d.drawRoundRect(x, y, CW, CH, 3, sc);
+
+    // Value text top-left
+    d.setTextSize(1); d.setTextColor(sc);
+    char val[4];
+    if      (c.val==1)  strcpy(val,"A");
+    else if (c.val==11) strcpy(val,"J");
+    else if (c.val==12) strcpy(val,"Q");
+    else if (c.val==13) strcpy(val,"K");
+    else snprintf(val, sizeof(val), "%d", c.val);
+    d.setCursor(x+2, y+2); d.print(val);
+
+    // Suit symbol centered in lower 2/3 of card
+    drawSuit(x + CW/2, y + CH/2 + 4, c.suit, sc);
+}
+
+// ── State ─────────────────────────────────────────────────────────────────
 static Card  deck[52];
 static int   deckTop;
 static Card  pHand[11], dHand[11];
@@ -22,18 +92,20 @@ static int   pCount, dCount;
 static int   credits, bet, origBet;
 static char  msg[48];
 static uint16_t msgCol;
-static bool  soundOn = false;
+static bool  soundOn  = false;
 static int   soundVol = 100;
 static enum { BETTING, PLAYER_TURN, DEALER_TURN, RESULT } bjState;
 
+// ── Sound ─────────────────────────────────────────────────────────────────
 static void sndCard() { if (!soundOn) return; M5Cardputer.Speaker.tone(1000,20); }
 static void sndWin()  { if (!soundOn) return; M5Cardputer.Speaker.tone(880,80); delay(90); M5Cardputer.Speaker.tone(1100,120); }
 static void sndLose() { if (!soundOn) return; M5Cardputer.Speaker.tone(300,200); }
 
+// ── Deck ──────────────────────────────────────────────────────────────────
 static void shuffleDeck() {
     int k=0;
     for (int s=0;s<4;s++) for (int v=1;v<=13;v++) deck[k++]={v,s};
-    for (int i=51;i>0;i--) { int j=random(i+1); Card t=deck[i]; deck[i]=deck[j]; deck[j]=t; }
+    for (int i=51;i>0;i--){ int j=random(i+1); Card t=deck[i]; deck[i]=deck[j]; deck[j]=t; }
     deckTop=0;
 }
 
@@ -44,32 +116,19 @@ static Card dealCard() {
 
 static int handTotal(Card* h, int n) {
     int tot=0, aces=0;
-    for (int i=0;i<n;i++) {
+    for (int i=0;i<n;i++){
         int v=h[i].val;
-        if (v==1) { aces++; tot+=11; }
+        if (v==1){ aces++; tot+=11; }
         else tot+=min(v,10);
     }
-    while (tot>21&&aces>0) { tot-=10; aces--; }
+    while (tot>21&&aces>0){ tot-=10; aces--; }
     return tot;
 }
 
-static void printCard(Card c, bool hidden=false) {
-    auto& d = M5Cardputer.Display;
-    if (hidden) { d.setTextColor(C_DIM); d.print("[??]"); return; }
-    d.setTextColor(SUIT_COL[c.suit]);
-    char buf[8];
-    if      (c.val==1)  snprintf(buf,sizeof(buf),"[A%s]", SUITS[c.suit]);
-    else if (c.val==11) snprintf(buf,sizeof(buf),"[J%s]", SUITS[c.suit]);
-    else if (c.val==12) snprintf(buf,sizeof(buf),"[Q%s]", SUITS[c.suit]);
-    else if (c.val==13) snprintf(buf,sizeof(buf),"[K%s]", SUITS[c.suit]);
-    else                snprintf(buf,sizeof(buf),"[%d%s]",c.val,SUITS[c.suit]);
-    d.print(buf);
-}
-
+// ── Draw helpers ──────────────────────────────────────────────────────────
 static void drawHeader() {
     auto& d = M5Cardputer.Display;
-    d.fillRect(0,0,240,16,0x1800);
-    d.setTextSize(1); d.setTextColor(C_GOLD);
+    d.fillRect(0,0,240,16,0x1800); d.setTextSize(1); d.setTextColor(C_GOLD);
     const char* t = "<<  B L A C K J A C K  >>";
     d.setCursor((240-d.textWidth(t))/2,4); d.print(t);
 }
@@ -77,7 +136,7 @@ static void drawHeader() {
 static void drawHUD() {
     auto& d = M5Cardputer.Display;
     d.fillRect(0,17,240,11,C_BG); d.setTextSize(1);
-    char l[20],r[24];
+    char l[20], r[24];
     snprintf(l,sizeof(l),"BET: %d",bet);
     snprintf(r,sizeof(r),"CREDITS: %d",credits);
     d.setTextColor(C_TXT);
@@ -85,158 +144,224 @@ static void drawHUD() {
     d.setCursor(240-d.textWidth(r)-4,18); d.print(r);
 }
 
-static void drawHands(bool hideDealer=true) {
+static void drawHandRow(Card* hand, int count, int y, bool hideFirst) {
     auto& d = M5Cardputer.Display;
-    d.fillRect(0,29,240,66,C_BG); d.setTextSize(1);
-    // Dealer
-    d.setTextColor(C_DIM); d.setCursor(4,34); d.print("DEALER ");
-    for (int i=0;i<dCount;i++) {
-        printCard(dHand[i], hideDealer&&i==0);
-        d.setTextColor(C_DIM); d.print(" ");
+    d.fillRect(0, y, 240, CH, C_BG);
+    for (int i=0; i<count && i<8; i++) {
+        drawCard(CX0 + i*(CW+CG), y, hand[i], hideFirst && i==0);
     }
-    if (!hideDealer) {
-        int t=handTotal(dHand,dCount);
-        d.setTextColor(t>21?C_RED:C_TXT);
-        char b[8]; snprintf(b,sizeof(b),"=%d",t); d.print(b);
+    // Total badge to the right of cards
+    if (!hideFirst) {
+        int tot = handTotal(hand, count);
+        d.setTextSize(1);
+        d.setTextColor(tot>21 ? C_RED : C_TXT);
+        char b[8]; snprintf(b,sizeof(b),"=%d",tot);
+        int bx = CX0 + count*(CW+CG) + 2;
+        if (bx+d.textWidth(b)<240){
+            d.setCursor(bx, y + CH/2 - 4);
+            d.print(b);
+        }
     }
-    d.drawFastHLine(0,52,240,0x2945);
-    // Player
-    d.setTextColor(C_DIM); d.setCursor(4,58); d.print("YOU    ");
-    for (int i=0;i<pCount;i++) { printCard(pHand[i]); d.setTextColor(C_DIM); d.print(" "); }
-    int pt=handTotal(pHand,pCount);
-    d.setTextColor(pt>21?C_RED:C_TXT);
-    char b[8]; snprintf(b,sizeof(b),"=%d",pt); d.print(b);
-    d.drawFastHLine(0,76,240,0x2945);
+}
+
+static void drawLabels() {
+    auto& d = M5Cardputer.Display;
+    d.setTextSize(1);
+    // Dealer label
+    d.fillRect(0, DEALER_Y-10, 60, 10, C_BG);
+    d.setTextColor(C_DIM); d.setCursor(4, DEALER_Y-9); d.print("DEALER");
+    // Player label
+    d.fillRect(0, PLAYER_Y-10, 60, 10, C_BG);
+    d.setTextColor(C_DIM); d.setCursor(4, PLAYER_Y-9); d.print("YOU");
 }
 
 static void drawMsg() {
     auto& d = M5Cardputer.Display;
-    d.fillRect(0,79,240,13,C_BG);
+    d.fillRect(0,119,240,13,C_BG);
     if (!msg[0]) return;
     d.setTextSize(1); d.setTextColor(msgCol);
-    d.setCursor((240-d.textWidth(msg))/2,81); d.print(msg);
+    d.setCursor((240-d.textWidth(msg))/2,119); d.print(msg);
 }
 
 static void drawFooter() {
     auto& d = M5Cardputer.Display;
-    d.fillRect(0,94,240,41,0x0821); d.setTextSize(1);
-    d.setTextColor(0x39E7);
-    d.setCursor(4,97);
+    d.fillRect(0,133,240,2,0x0821);   // thin divider
+    // compact one-liner that fits 240px
+    d.setTextSize(1); d.fillRect(0,124,240,9,0x0821);
+    d.setTextColor(0x39E7); d.setCursor(2,124);
     if      (bjState==BETTING)     d.print("+/-=BET  SPC=DEAL  Q=MENU");
-    else if (bjState==PLAYER_TURN) d.print("H=HIT  S=STAND  D=DOUBLE  Q=MENU");
+    else if (bjState==PLAYER_TURN) d.print("H=HIT  S=STAND  D=DBL  Q=MENU");
     else                           d.print("SPC/Enter=NEXT  Q=MENU");
-    d.setCursor(4,109);
-    d.setTextColor(C_DIM); d.print("BJ=1.5x  WIN=2x  PUSH=ret  PAIR=4x");
-    d.setCursor(4,121);
-    d.setTextColor(soundOn?C_GRN:C_DIM);
-    if (soundOn) { char v[20]; snprintf(v,sizeof(v),"M=SFX:ON  []=VOL:%d",soundVol/50); d.print(v); }
-    else d.print("M=SFX:OFF");
 }
 
-static void evalHand() {
-    int p=handTotal(pHand,pCount);
-    int dv=handTotal(dHand,dCount);
-    bool pBJ=(pCount==2&&p==21);
-    bool dBJ=(dCount==2&&dv==21);
+// ── Animations ────────────────────────────────────────────────────────────
+
+// Flip a single card back→face at its position
+static void flipCard(int x, int y, Card c) {
+    drawCard(x, y, c, true);   delay(90);
+    drawCard(x, y, c, false);
+}
+
+// Deal one card with flip animation then update the total badge
+static void dealAnimated(Card* hand, int count, int y, bool otherHidden) {
+    int x = CX0 + (count-1) * (CW+CG);
+    drawCard(x, y, hand[count-1], true);   // back
+    delay(100);
+    drawCard(x, y, hand[count-1], false);  // face
+    // refresh total badge
+    if (!otherHidden) {
+        auto& d = M5Cardputer.Display;
+        int tot = handTotal(hand, count);
+        d.setTextSize(1);
+        d.setTextColor(tot>21 ? C_RED : C_TXT);
+        char b[8]; snprintf(b,sizeof(b),"=%d ",tot);
+        int bx = CX0 + count*(CW+CG) + 2;
+        d.fillRect(bx, y, 30, CH, C_BG);
+        if (bx+d.textWidth(b)<240){ d.setCursor(bx, y+CH/2-4); d.print(b); }
+    }
+}
+
+// Flash the winning hand border gold (3 pulses) before result message
+static void flashWinner(int y, bool win) {
+    if (!win) return;
+    for (int f=0; f<3; f++) {
+        for (int i=0; i<pCount && i<8; i++) {
+            auto& d = M5Cardputer.Display;
+            d.drawRoundRect(CX0+i*(CW+CG), y, CW, CH, 3, f%2==0 ? C_GOLD : SUIT_COL[pHand[i].suit]);
+        }
+        delay(120);
+    }
+}
+
+// ── Game logic ────────────────────────────────────────────────────────────
+static void evalAndShow() {
+    int p  = handTotal(pHand, pCount);
+    int dv = handTotal(dHand, dCount);
+    bool pBJ = (pCount==2 && p==21);
+    bool dBJ = (dCount==2 && dv==21);
+
     if (p>21) {
         snprintf(msg,sizeof(msg),"Bust! You lose."); msgCol=C_DIM; sndLose();
-    } else if (pBJ&&!dBJ) {
-        int win=bet+bet/2;  // 1.5x
-        credits+=bet+win;   // return bet + winnings
+    } else if (pBJ && !dBJ) {
+        int win = bet + bet/2;
+        credits += bet + win;
         snprintf(msg,sizeof(msg),"Blackjack! +%d",win); msgCol=C_GOLD; sndWin();
-    } else if (dBJ&&!pBJ) {
-        snprintf(msg,sizeof(msg),"Dealer BJ. You lose."); msgCol=C_DIM; sndLose();
+    } else if (dBJ && !pBJ) {
+        snprintf(msg,sizeof(msg),"Dealer Blackjack. You lose."); msgCol=C_DIM; sndLose();
     } else if (dv>21) {
-        credits+=bet*2; snprintf(msg,sizeof(msg),"Dealer busts! +%d",bet*2); msgCol=C_GRN; sndWin();
+        credits += bet*2;
+        snprintf(msg,sizeof(msg),"Dealer busts! You win +%d",bet*2); msgCol=C_GRN; sndWin();
     } else if (p>dv) {
-        credits+=bet*2; snprintf(msg,sizeof(msg),"You win! +%d",bet*2); msgCol=C_GRN; sndWin();
+        credits += bet*2;
+        snprintf(msg,sizeof(msg),"You win! %d vs %d  +%d",p,dv,bet*2); msgCol=C_GRN; sndWin();
     } else if (p==dv) {
-        credits+=bet; snprintf(msg,sizeof(msg),"Push. Bet returned."); msgCol=C_TXT;
+        credits += bet;
+        snprintf(msg,sizeof(msg),"Push — %d vs %d. Bet returned.",p,dv); msgCol=C_TXT;
     } else {
-        snprintf(msg,sizeof(msg),"Dealer wins."); msgCol=C_DIM; sndLose();
+        snprintf(msg,sizeof(msg),"Dealer wins. %d vs %d",dv,p); msgCol=C_DIM; sndLose();
     }
+    // Brief pause then flash winner before showing message
+    delay(300);
+    bool playerWon = (msgCol==C_GRN || msgCol==C_GOLD);
+    flashWinner(PLAYER_Y, playerWon);
     bjState=RESULT;
+    drawHUD(); drawMsg(); drawFooter();
+    if (credits<=0){ snprintf(msg,sizeof(msg),"BROKE!  SPC=reset  Q=menu"); msgCol=C_RED; drawMsg(); }
 }
 
 static void dealerPlay() {
-    drawHands(false); delay(500);
+    // Flip dealer's hole card
+    delay(300);
+    flipCard(CX0, DEALER_Y, dHand[0]);
+    // Refresh full row to show total
+    drawHandRow(dHand, dCount, DEALER_Y, false);
+    delay(400);
+    // Dealer draws until 17+
     while (handTotal(dHand,dCount)<17 && dCount<11) {
-        dHand[dCount++]=dealCard(); sndCard();
-        drawHands(false); delay(400);
+        dHand[dCount++] = dealCard(); sndCard();
+        dealAnimated(dHand, dCount, DEALER_Y, false);
+        delay(350);
     }
-    evalHand();
-    drawHUD(); drawMsg(); drawFooter();
-    if (credits<=0) {
-        snprintf(msg,sizeof(msg),"BROKE! SPC=reset Q=menu"); msgCol=C_RED; drawMsg();
-    }
+    evalAndShow();
 }
 
 static void deal() {
-    if (credits<bet) { snprintf(msg,sizeof(msg),"Not enough credits!"); msgCol=C_RED; drawMsg(); return; }
-    credits-=bet; origBet=bet;
+    if (credits<bet){ snprintf(msg,sizeof(msg),"Not enough credits!"); msgCol=C_RED; drawMsg(); return; }
+    credits -= bet; origBet = bet;
     pCount=0; dCount=0;
-    pHand[pCount++]=dealCard(); sndCard();
-    dHand[dCount++]=dealCard(); sndCard();
-    pHand[pCount++]=dealCard(); sndCard();
-    dHand[dCount++]=dealCard(); sndCard();
     msg[0]='\0'; bjState=PLAYER_TURN;
-    drawHUD(); drawHands(true); drawMsg(); drawFooter();
-    if (handTotal(pHand,pCount)==21) { dealerPlay(); }  // natural BJ
+    drawHUD();
+    // Clear card areas
+    M5Cardputer.Display.fillRect(0, DEALER_Y, 240, CH, C_BG);
+    M5Cardputer.Display.fillRect(0, PLAYER_Y, 240, CH, C_BG);
+    // Deal cards one at a time with flip animation: P D P D
+    pHand[pCount++]=dealCard(); sndCard(); dealAnimated(pHand, pCount, PLAYER_Y, false); delay(120);
+    dHand[dCount++]=dealCard(); sndCard(); drawCard(CX0, DEALER_Y, dHand[0], true); delay(120); // dealer face-down
+    pHand[pCount++]=dealCard(); sndCard(); dealAnimated(pHand, pCount, PLAYER_Y, false); delay(120);
+    dHand[dCount++]=dealCard(); sndCard(); dealAnimated(dHand, dCount, DEALER_Y, true); delay(120); // dealer 2nd card face-up, keep 1st hidden
+    drawMsg(); drawFooter();
+    if (handTotal(pHand,pCount)==21) dealerPlay();  // natural BJ
 }
 
+// ── Public ────────────────────────────────────────────────────────────────
 void init() {
-    credits=100; bet=5; origBet=5; msg[0]='\0'; msgCol=C_DIM;
-    bjState=BETTING;
+    credits=100; bet=5; origBet=5; msg[0]='\0'; msgCol=C_DIM; bjState=BETTING;
     shuffleDeck();
     M5Cardputer.Speaker.setVolume(soundVol);
-    auto& d=M5Cardputer.Display;
+    auto& d = M5Cardputer.Display;
     d.fillScreen(C_BG);
-    drawHeader(); drawHUD();
-    d.fillRect(0,29,240,66,C_BG);
+    drawHeader(); drawHUD(); drawLabels();
+    // Empty card areas
+    d.fillRect(0, DEALER_Y, 240, CH, C_BG);
+    d.fillRect(0, PLAYER_Y, 240, CH, C_BG);
     snprintf(msg,sizeof(msg),"Place your bet and deal!"); msgCol=C_DIM;
     drawMsg(); drawFooter();
 }
 
 bool tick() {
     if (M5Cardputer.Keyboard.isChange() && M5Cardputer.Keyboard.isPressed()) {
-        auto st=M5Cardputer.Keyboard.keysState();
-        bool wantNext=st.enter;
+        auto st = M5Cardputer.Keyboard.keysState();
+        bool act = st.enter;
         for (char c : st.word) {
             if (c=='q'||c=='Q') return false;
-            if (c=='m'||c=='M') { soundOn=!soundOn; drawFooter(); }
-            if (c==']') { soundVol=min(soundVol+50,250); M5Cardputer.Speaker.setVolume(soundVol); drawFooter(); }
-            if (c=='[') { soundVol=max(soundVol-50, 50); M5Cardputer.Speaker.setVolume(soundVol); drawFooter(); }
+            if (c=='m'||c=='M'){ soundOn=!soundOn; drawFooter(); }
+            if (c==']'){ soundVol=min(soundVol+50,250); M5Cardputer.Speaker.setVolume(soundVol); drawFooter(); }
+            if (c=='['){ soundVol=max(soundVol-50, 50); M5Cardputer.Speaker.setVolume(soundVol); drawFooter(); }
+            if (c==' ') act=true;
 
             if (bjState==BETTING) {
-                if (c==' ') wantNext=true;
                 if (c=='+'||c=='=') { bet=min(bet+1,20); drawHUD(); }
-                if (c=='-')        { bet=max(bet-1,1);  drawHUD(); }
+                if (c=='-')         { bet=max(bet-1,1);  drawHUD(); }
             } else if (bjState==PLAYER_TURN) {
                 if (c=='h'||c=='H') {
-                    if (pCount<11) {
-                        pHand[pCount++]=dealCard(); sndCard(); drawHands(true);
-                        if (handTotal(pHand,pCount)>21) { dealerPlay(); }
+                    if (pCount<11){
+                        pHand[pCount++]=dealCard(); sndCard();
+                        drawHandRow(pHand,pCount,PLAYER_Y,false);
+                        if (handTotal(pHand,pCount)>21) dealerPlay();
                     }
                 }
-                if (c=='s'||c=='S') { dealerPlay(); }
+                if (c=='s'||c=='S') dealerPlay();
                 if ((c=='d'||c=='D') && pCount==2 && credits>=bet) {
                     credits-=bet; bet*=2;
                     pHand[pCount++]=dealCard(); sndCard();
-                    drawHUD(); drawHands(true);
+                    drawHUD(); drawHandRow(pHand,pCount,PLAYER_Y,false);
                     dealerPlay();
                 }
-            } else if (bjState==RESULT) {
-                if (c==' ') wantNext=true;
             }
         }
-        if (wantNext) {
-            if (bjState==BETTING) { deal(); }
-            else if (bjState==RESULT) {
-                if (credits<=0) { credits=100; bet=min(origBet,5); }
-                bet=origBet;
-                bjState=BETTING; msg[0]='\0';
-                M5Cardputer.Display.fillRect(0,29,240,66,C_BG);
-                drawHUD(); drawMsg(); drawFooter();
+        if (act) {
+            if (bjState==BETTING) {
+                deal();
+            } else if (bjState==RESULT) {
+                if (credits<=0){ credits=100; bet=min(origBet,5); }
+                bet=origBet; bjState=BETTING; msg[0]='\0';
+                auto& d = M5Cardputer.Display;
+                d.fillScreen(C_BG);
+                drawHeader(); drawHUD(); drawLabels();
+                d.fillRect(0,DEALER_Y,240,CH,C_BG);
+                d.fillRect(0,PLAYER_Y,240,CH,C_BG);
+                snprintf(msg,sizeof(msg),"Place your bet and deal!"); msgCol=C_DIM;
+                drawMsg(); drawFooter();
             }
         }
     }
