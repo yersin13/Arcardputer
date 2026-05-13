@@ -12,143 +12,104 @@ static const uint16_t C_GOLD  = 0xFEA0;
 static const uint16_t C_RED   = 0xF800;
 static const uint16_t C_GRN   = 0x07E0;
 static const uint16_t C_FELT  = 0x0260;
-static const uint16_t C_CARD  = 0xFFFF;
-static const uint16_t C_BACK  = 0x000F;
-static const uint16_t C_WOOD  = 0x8420;
-static const uint16_t C_ACTBG = 0x0821;
 static const uint16_t C_HDRBG = 0x1800;
+static const uint16_t C_ACTBG = 0x0821;
+static const uint16_t C_BACK  = 0x000F;
 
-// ── Card geometry ─────────────────────────────────────────────────────────
-static const int CW = 26;
-static const int CH = 34;
+// ── Layout ────────────────────────────────────────────────────────────────
+// y=0-11  : header (12px)
+// y=12-47 : 3 opponent zones, each 80×36
+// y=48-85 : community area (cards at y=52, CW=24 CH=28)
+// y=86-91 : status row
+// y=92-120: player area (cards at y=92 CW=24 CH=28 → bottom=120)
+// y=121-134: action bar
+static const int OPP_Y  = 12, OPP_H = 36, OPP_W = 80;
+static const int COM_Y  = 48;
+static const int STS_Y  = 86;
+static const int PLY_Y  = 92;
+static const int ACT_Y  = 121;
 
-// ── Suit colors ───────────────────────────────────────────────────────────
-static const uint16_t SUIT_COL[4] = { 0x2104, C_RED, C_RED, 0x2104 };
+static const int CW  = 24, CH  = 28;   // full cards
+static const int MCW = 13, MCH = 15;   // mini cards for opponent zones
 
-// ── Characters ────────────────────────────────────────────────────────────
+// Community card x positions (5 cards × 24 + 4 gaps × 3 = 132, offset=54)
+static const int CCX[5] = {54, 81, 108, 135, 162};
+static const int CC_Y   = 52;
+
+// Player card positions (2 cards × 24 + 1 gap × 4 = 52, offset=94)
+static const int PC_X1 = 94, PC_X2 = 122, PC_Y = 92;
+
+// ── Types ─────────────────────────────────────────────────────────────────
+struct Card { int val; int suit; };  // val 1-13 (1=Ace), suit 0-3
+
+enum Expression { EXP_NEUTRAL=0, EXP_HAPPY, EXP_SAD, EXP_THINK, EXP_SHOCK };
+enum THState    { PLAYER_ACT=0, CPU_SEQ, SHOWDOWN, ROUND_END };
+
 struct Character {
     const char* name;
-    const char* style;
-    uint16_t skinCol;
-    uint16_t hairCol;
-    uint16_t clothCol;
-    int aggression;
-    int tightness;
+    uint16_t skinCol, hairCol, clothCol;
+    int aggression;  // 1-9: higher = more likely to bet/raise
+    int tightness;   // 1-9: higher = more likely to fold
 };
 
-static const Character CHARS[3] = {
-    {"THE COWBOY",  "AGGRESSIVE", 0xD6BA, 0x6200, 0xC980, 8, 3},
-    {"THE SHARK",   "TIGHT",      0xBDD7, 0x18C3, 0x0010, 5, 8},
-    {"THE ROOKIE",  "LOOSE",      0xFEEA, 0xC400, 0x07FF, 4, 2},
+// ── Characters (all 3 always at the table) ────────────────────────────────
+static const int NCPU = 3;
+static const Character CHARS[NCPU] = {
+    { "COWBOY",  0xD6BA, 0x6200, 0xC980, 8, 3 },
+    { "SHARK",   0xBDD7, 0x18C3, 0x0010, 4, 8 },
+    { "ROOKIE",  0xFEEA, 0xC400, 0x07FF, 5, 2 },
 };
 
-// ── Enums ─────────────────────────────────────────────────────────────────
-enum GameState {
-    SELECT_CHAR, DEAL_ANIM, PLAYER_ACT, CPU_ACT,
-    SHOW_FLOP, SHOW_TURN, SHOW_RIVER, SHOWDOWN, ROUND_END
-};
-
-enum Expression { EXP_NEUTRAL, EXP_HAPPY, EXP_SAD, EXP_THINK, EXP_SHOCK };
-
-// ── State variables ───────────────────────────────────────────────────────
-struct Card { int val; int suit; };
-
-static Card deck[52];
-static int  deckTop;
-static Card playerHole[2], cpuHole[2], community[5];
-static int  communityCount;
-static int  pot, playerChips, cpuChips;
-static int  playerBet, cpuBet;
-static int  roundBet;
-static bool playerActed;
-static int  selectedChar;
-static int  charSelIdx;
-static bool playerFolded, cpuFolded;
-static int  raiseAmount;
-static GameState thState;
-static Expression cpuExp;
-static int  expTimer;
-static int  blinkTimer;
-static bool eyesBlink;
-static char statusMsg[48];
-static uint16_t statusCol;
-static int  statusTimer;
-static bool soundOn  = false;
-static int  soundVol = 100;
-static int  handNumber;
-
-// ── Sound ─────────────────────────────────────────────────────────────────
-static void sndWin()  { if(!soundOn)return; M5Cardputer.Speaker.tone(880,80); delay(90); M5Cardputer.Speaker.tone(1100,120); }
-static void sndLose() { if(!soundOn)return; M5Cardputer.Speaker.tone(300,200); }
-static void sndCard() { if(!soundOn)return; M5Cardputer.Speaker.tone(1000,20); }
-static void sndChip() { if(!soundOn)return; M5Cardputer.Speaker.tone(1400,15); }
+static const uint16_t SUIT_COL[4] = { 0x2104, C_RED, C_RED, 0x2104 };
 
 // ── Deck ──────────────────────────────────────────────────────────────────
+static Card deck[52];
+static int  deckTop;
+
 static void shuffleDeck() {
     int k=0;
     for(int s=0;s<4;s++) for(int v=1;v<=13;v++) deck[k++]={v,s};
     for(int i=51;i>0;i--){ int j=random(i+1); Card t=deck[i]; deck[i]=deck[j]; deck[j]=t; }
     deckTop=0;
 }
-
 static Card pullCard() {
     if(deckTop>=52) shuffleDeck();
     return deck[deckTop++];
 }
 
-// ── Suit drawing ──────────────────────────────────────────────────────────
-static void drawSuitTH(int cx, int cy, int suit, uint16_t col) {
-    auto& d = M5Cardputer.Display;
-    switch(suit) {
-        case 0: // Spades
-            d.fillCircle(cx-3,cy-1,3,col);
-            d.fillCircle(cx+3,cy-1,3,col);
-            d.fillTriangle(cx-5,cy+1,cx+5,cy+1,cx,cy+6,col);
-            d.fillRect(cx-1,cy+5,3,3,col);
-            break;
-        case 1: // Hearts
-            d.fillCircle(cx-3,cy-1,3,col);
-            d.fillCircle(cx+3,cy-1,3,col);
-            d.fillTriangle(cx-5,cy+1,cx+5,cy+1,cx,cy+7,col);
-            break;
-        case 2: // Diamonds
-            d.fillTriangle(cx,cy-5,cx+5,cy,cx-5,cy,col);
-            d.fillTriangle(cx-5,cy,cx+5,cy,cx,cy+5,col);
-            break;
-        case 3: // Clubs
-            d.fillCircle(cx,cy-3,3,col);
-            d.fillCircle(cx-4,cy+1,3,col);
-            d.fillCircle(cx+4,cy+1,3,col);
-            d.fillRect(cx-1,cy+3,3,4,col);
-            break;
-    }
-}
+// ── State ─────────────────────────────────────────────────────────────────
+static int   playerChips, playerBet;
+static bool  playerFolded;
+static Card  playerHole[2];
 
-// ── Card drawing ──────────────────────────────────────────────────────────
-static void drawCardTH(int x, int y, Card c, bool hidden=false) {
-    auto& d = M5Cardputer.Display;
-    if(hidden) {
-        d.fillRoundRect(x,y,CW,CH,3,C_BACK);
-        d.drawRoundRect(x,y,CW,CH,3,C_DIM);
-        for(int py=y+4;py<y+CH-3;py+=4)
-            d.drawFastHLine(x+3,py,CW-6,0x0018);
-        return;
-    }
-    uint16_t sc = SUIT_COL[c.suit];
-    d.fillRoundRect(x,y,CW,CH,3,C_CARD);
-    d.drawRoundRect(x,y,CW,CH,3,sc);
-    d.setTextSize(1); d.setTextColor(sc);
-    char val[4];
-    if     (c.val==1)  strcpy(val,"A");
-    else if(c.val==11) strcpy(val,"J");
-    else if(c.val==12) strcpy(val,"Q");
-    else if(c.val==13) strcpy(val,"K");
-    else snprintf(val,sizeof(val),"%d",c.val);
-    d.setCursor(x+2,y+2); d.print(val);
-    drawSuitTH(x+CW/2, y+CH/2+3, c.suit, sc);
-}
+static int        cpuChipsArr[NCPU], cpuBetArr[NCPU];
+static bool       cpuFoldedArr[NCPU];
+static Card       cpuHoleArr[NCPU][2];
+static Expression cpuExpArr[NCPU];
+static int        expTimerArr[NCPU];
 
-// ── Hand evaluation (copy of VideoPoker evalHand, renamed evalHand5) ──────
+static int   pot, roundBet, raiseAmount;
+static Card  community[5];
+static int   communityCount;
+static int   handNumber;
+static THState thState;
+static bool  cpuRaisedThisRound;
+
+static char     statusMsg[56];
+static uint16_t statusCol;
+static int      statusTimer;
+static int      blinkTimer;
+static bool     eyesBlink;
+static bool     soundOn  = false;
+static int      soundVol = 100;
+
+// ── Sound ─────────────────────────────────────────────────────────────────
+static void sndWin()  { if(!soundOn)return; M5Cardputer.Speaker.tone(880,80); delay(90); M5Cardputer.Speaker.tone(1100,100); }
+static void sndLose() { if(!soundOn)return; M5Cardputer.Speaker.tone(300,200); }
+static void sndCard() { if(!soundOn)return; M5Cardputer.Speaker.tone(1000,20); }
+static void sndChip() { if(!soundOn)return; M5Cardputer.Speaker.tone(1400,15); }
+
+// ── Hand evaluators ───────────────────────────────────────────────────────
 static int evalHand5(Card h[5]) {
     int cnt[14]={}, suits[4]={};
     for(int i=0;i<5;i++){ cnt[h[i].val]++; suits[h[i].suit]++; }
@@ -158,12 +119,11 @@ static int evalHand5(Card h[5]) {
     bool royal=(v[0]==1&&v[1]==10&&v[2]==11&&v[3]==12&&v[4]==13);
     bool straight=royal;
     if(!straight){straight=true;for(int i=0;i<4;i++)if(v[i+1]!=v[i]+1){straight=false;break;}}
-    int mx=0,pairs=0,trips=0,quads=0;
+    int pairs=0,trips=0,quads=0;
     for(int vv=1;vv<=13;vv++){
         if(cnt[vv]==4)quads++;
         if(cnt[vv]==3)trips++;
         if(cnt[vv]==2)pairs++;
-        if(cnt[vv]>mx)mx=cnt[vv];
     }
     if(flush&&royal)    return 9;
     if(flush&&straight) return 8;
@@ -177,700 +137,591 @@ static int evalHand5(Card h[5]) {
     return 0;
 }
 
-// ── 7-card best hand evaluator ────────────────────────────────────────────
 static int eval7(Card h[7]) {
     int best=0;
-    for(int s1=0;s1<7;s1++) for(int s2=s1+1;s2<7;s2++) {
+    for(int s1=0;s1<7;s1++) for(int s2=s1+1;s2<7;s2++){
         Card h5[5]; int k=0;
         for(int i=0;i<7;i++) if(i!=s1&&i!=s2) h5[k++]=h[i];
-        int r=evalHand5(h5);
-        if(r>best) best=r;
+        int r=evalHand5(h5); if(r>best) best=r;
     }
     return best;
 }
 
-// ── Pre-flop 2-card strength (0-9) ───────────────────────────────────────
 static int preFlopStr(Card h[2]) {
     int v1=h[0].val, v2=h[1].val;
     if(v1==1) v1=14; if(v2==1) v2=14;
     if(v1<v2){ int t=v1; v1=v2; v2=t; }
     bool suited=(h[0].suit==h[1].suit);
-    if(v1==v2) return min(9, 4+v1/3);
+    if(v1==v2) return min(9,4+v1/3);
     if(v1==14&&v2>=10) return 8;
     if(v1==14&&suited) return 6;
     if(v1>=11&&v2>=10) return 7;
     if(v1==14) return 5;
     if(suited&&v1-v2<=2) return 5;
-    if(v1>=10&&v2>=8)  return 4;
+    if(v1>=10&&v2>=8)   return 4;
     return 2;
 }
 
-// ── CPU hand strength ─────────────────────────────────────────────────────
-static int getCpuHandStrength() {
-    if(communityCount==0) return preFlopStr(cpuHole);
-    if(communityCount<3)  return preFlopStr(cpuHole);
-    if(communityCount+2==5) {
-        Card h5[5]={cpuHole[0],cpuHole[1],community[0],community[1],community[2]};
+static int getCpuStr(int i) {
+    if(communityCount>=3) {
+        Card h5[5]={cpuHoleArr[i][0],cpuHoleArr[i][1],community[0],community[1],community[2]};
         return evalHand5(h5);
     }
-    Card h7[7];
-    h7[0]=cpuHole[0]; h7[1]=cpuHole[1];
-    for(int i=0;i<communityCount;i++) h7[2+i]=community[i];
-    if(communityCount+2<7) {
-        // pad remaining slots with copies to fill 7
-        // but eval7 uses all 7, so just eval with available: use evalHand5 best of available
-        // Actually build a 5-card eval from hole+community
-        Card h5[5]={cpuHole[0],cpuHole[1],community[0],community[1],community[communityCount-1]};
-        return evalHand5(h5);
-    }
-    return eval7(h7);
+    return preFlopStr(cpuHoleArr[i]);
 }
 
-// ── Portrait drawing ──────────────────────────────────────────────────────
-static void drawExpressionMouth(M5GFX& d, int cx, int mouthY, Expression exp) {
-    switch(exp) {
-        case EXP_NEUTRAL:
-            d.drawFastHLine(cx-4,mouthY,8,0x2104);
-            break;
-        case EXP_HAPPY:
-            d.drawLine(cx-4,mouthY+2,cx,mouthY-1,0x2104);
-            d.drawLine(cx,mouthY-1,cx+4,mouthY+2,0x2104);
-            break;
-        case EXP_SAD:
-            d.drawLine(cx-4,mouthY-1,cx,mouthY+2,0x2104);
-            d.drawLine(cx,mouthY+2,cx+4,mouthY-1,0x2104);
-            break;
-        case EXP_THINK:
-            d.drawFastHLine(cx+1,mouthY,5,0x2104);
-            d.fillCircle(cx+8,mouthY-1,2,0x2104);
-            break;
-        case EXP_SHOCK:
-            d.fillCircle(cx,mouthY+1,3,0x2104);
-            break;
-    }
-}
-
-static void drawPortraitSmall(int px, int py, int charIdx, Expression exp, bool blink) {
+// ── Drawing: suit symbols ─────────────────────────────────────────────────
+static void drawSuitTH(int cx, int cy, int suit, uint16_t col) {
     auto& d = M5Cardputer.Display;
-    const Character& ch = CHARS[charIdx];
-    int cx = px+25;
-    int cy = py+22;
-
-    // Background + border
-    d.fillRoundRect(px,py,50,40,4,0x0210);
-    d.drawRoundRect(px,py,50,40,4,ch.clothCol);
-
-    if(charIdx==0) { // COWBOY
-        // Hat
-        d.fillRect(px+4, cy-14, 42, 3, 0x6200);
-        d.fillRect(px+11, cy-23, 28, 10, 0x6200);
-        d.drawFastHLine(px+11, cy-14, 28, 0x3100);
-        // Head
-        d.fillCircle(cx, cy, 11, ch.skinCol);
-        // Eyes
-        if(!blink) {
-            d.fillCircle(cx-4,cy-4,2,0x2104);
-            d.fillCircle(cx+4,cy-4,2,0x2104);
-        } else {
-            d.drawFastHLine(cx-6,cy-4,4,0x2104);
-            d.drawFastHLine(cx+2,cy-4,4,0x2104);
-        }
-        // Mustache
-        d.fillRect(cx-5,cy+2,10,2,0x4000);
-        // Collar
-        d.fillRect(cx-8,py+33,16,5,ch.clothCol);
-        // Mouth
-        drawExpressionMouth(d, cx, cy+5, exp);
-    }
-    else if(charIdx==1) { // SHARK
-        // Head
-        d.fillCircle(cx,cy-1,11,ch.skinCol);
-        // Hair slick
-        d.fillRect(cx-10,cy-12,20,5,ch.hairCol);
-        d.fillTriangle(cx-10,cy-12,cx-14,cy-8,cx-10,cy-8,ch.hairCol);
-        // Sunglasses
-        d.fillRoundRect(cx-9,cy-5,7,4,1,0x2104);
-        d.fillRoundRect(cx+2,cy-5,7,4,1,0x2104);
-        d.drawFastHLine(cx-2,cy-3,4,0x4208);
-        // Suit collar
-        d.fillRect(cx-8,py+33,16,6,ch.clothCol);
-        // Tie
-        d.fillTriangle(cx-3,py+33,cx,py+29,cx+3,py+33,0xFFFF);
-        d.drawLine(cx,py+29,cx,py+38,0x4208);
-        // Mouth
-        drawExpressionMouth(d, cx, cy+4, exp);
-    }
-    else { // ROOKIE
-        // Messy hair spikes
-        d.fillTriangle(cx-8,cy-21,cx-5,cy-13,cx-2,cy-21,ch.hairCol);
-        d.fillTriangle(cx-2,cy-23,cx+1,cy-15,cx+4,cy-23,ch.hairCol);
-        d.fillTriangle(cx+3,cy-20,cx+6,cy-13,cx+9,cy-20,ch.hairCol);
-        // Head
-        d.fillCircle(cx,cy-1,11,ch.skinCol);
-        // Wide eyes
-        if(!blink) {
-            d.fillCircle(cx-4,cy-5,3,0xFFFF);
-            d.fillCircle(cx+4,cy-5,3,0xFFFF);
-            d.fillCircle(cx-4,cy-5,1,0x2104);
-            d.fillCircle(cx+4,cy-5,1,0x2104);
-        } else {
-            d.drawFastHLine(cx-7,cy-5,6,ch.skinCol);
-            d.drawFastHLine(cx+1,cy-5,6,ch.skinCol);
-        }
-        // Hoodie
-        d.fillRect(cx-8,py+33,16,6,ch.clothCol);
-        // Mouth
-        drawExpressionMouth(d, cx, cy+5, exp);
+    switch(suit) {
+        case 0: d.fillCircle(cx-3,cy-1,3,col); d.fillCircle(cx+3,cy-1,3,col);
+                d.fillTriangle(cx-5,cy+1,cx+5,cy+1,cx,cy+6,col);
+                d.fillRect(cx-1,cy+5,3,3,col); break;
+        case 1: d.fillCircle(cx-3,cy-1,3,col); d.fillCircle(cx+3,cy-1,3,col);
+                d.fillTriangle(cx-5,cy+1,cx+5,cy+1,cx,cy+7,col); break;
+        case 2: d.fillTriangle(cx,cy-5,cx+5,cy,cx-5,cy,col);
+                d.fillTriangle(cx-5,cy,cx+5,cy,cx,cy+5,col); break;
+        case 3: d.fillCircle(cx,cy-3,3,col); d.fillCircle(cx-4,cy+1,3,col);
+                d.fillCircle(cx+4,cy+1,3,col); d.fillRect(cx-1,cy+3,3,4,col); break;
     }
 }
 
-static void drawPortraitLarge(int px, int py, int charIdx, Expression exp, bool blink) {
+// 5×5 suit for card top-left corner
+static void drawSuitSmall(int x, int y, int suit, uint16_t col) {
     auto& d = M5Cardputer.Display;
-    const Character& ch = CHARS[charIdx];
-    int cx = px+40;
-    int cy = py+35;
-
-    // Background + border
-    d.fillRoundRect(px,py,80,64,6,0x0210);
-    d.drawRoundRect(px,py,80,64,6,ch.clothCol);
-
-    if(charIdx==0) { // COWBOY large
-        d.fillRect(px+4,cy-22,72,5,0x6200);
-        d.fillRect(px+16,cy-38,48,17,0x6200);
-        d.drawFastHLine(px+16,cy-22,48,0x3100);
-        d.fillCircle(cx,cy,18,ch.skinCol);
-        if(!blink) {
-            d.fillCircle(cx-6,cy-6,3,0x2104);
-            d.fillCircle(cx+6,cy-6,3,0x2104);
-        } else {
-            d.drawFastHLine(cx-9,cy-6,6,0x2104);
-            d.drawFastHLine(cx+3,cy-6,6,0x2104);
-        }
-        d.fillRect(cx-8,cy+3,16,3,0x4000);
-        d.fillRect(cx-13,py+55,26,8,ch.clothCol);
-        // Mouth large
-        int mY=cy+8;
-        switch(exp){
-            case EXP_NEUTRAL: d.drawFastHLine(cx-6,mY,12,0x2104); break;
-            case EXP_HAPPY:   d.drawLine(cx-6,mY+3,cx,mY-2,0x2104); d.drawLine(cx,mY-2,cx+6,mY+3,0x2104); break;
-            case EXP_SAD:     d.drawLine(cx-6,mY-2,cx,mY+3,0x2104); d.drawLine(cx,mY+3,cx+6,mY-2,0x2104); break;
-            case EXP_THINK:   d.drawFastHLine(cx+2,mY,8,0x2104); d.fillCircle(cx+13,mY-2,3,0x2104); break;
-            case EXP_SHOCK:   d.fillCircle(cx,mY+2,5,0x2104); break;
-        }
-    }
-    else if(charIdx==1) { // SHARK large
-        d.fillCircle(cx,cy-1,18,ch.skinCol);
-        d.fillRect(cx-16,cy-19,32,8,ch.hairCol);
-        d.fillTriangle(cx-16,cy-19,cx-22,cy-13,cx-16,cy-13,ch.hairCol);
-        d.fillRoundRect(cx-14,cy-8,11,6,1,0x2104);
-        d.fillRoundRect(cx+3,cy-8,11,6,1,0x2104);
-        d.drawFastHLine(cx-3,cy-5,6,0x4208);
-        d.fillRect(cx-13,py+55,26,9,ch.clothCol);
-        d.fillTriangle(cx-5,py+55,cx,py+47,cx+5,py+55,0xFFFF);
-        d.drawLine(cx,py+47,cx,py+63,0x4208);
-        int mY=cy+7;
-        switch(exp){
-            case EXP_NEUTRAL: d.drawFastHLine(cx-6,mY,12,0x2104); break;
-            case EXP_HAPPY:   d.drawLine(cx-6,mY+3,cx,mY-2,0x2104); d.drawLine(cx,mY-2,cx+6,mY+3,0x2104); break;
-            case EXP_SAD:     d.drawLine(cx-6,mY-2,cx,mY+3,0x2104); d.drawLine(cx,mY+3,cx+6,mY-2,0x2104); break;
-            case EXP_THINK:   d.drawFastHLine(cx+2,mY,8,0x2104); d.fillCircle(cx+13,mY-2,3,0x2104); break;
-            case EXP_SHOCK:   d.fillCircle(cx,mY+2,5,0x2104); break;
-        }
-    }
-    else { // ROOKIE large
-        d.fillTriangle(cx-13,cy-34,cx-8,cy-21,cx-3,cy-34,ch.hairCol);
-        d.fillTriangle(cx-3,cy-37,cx+2,cy-24,cx+6,cy-37,ch.hairCol);
-        d.fillTriangle(cx+5,cy-32,cx+10,cy-21,cx+14,cy-32,ch.hairCol);
-        d.fillCircle(cx,cy-1,18,ch.skinCol);
-        if(!blink) {
-            d.fillCircle(cx-6,cy-8,5,0xFFFF);
-            d.fillCircle(cx+6,cy-8,5,0xFFFF);
-            d.fillCircle(cx-6,cy-8,2,0x2104);
-            d.fillCircle(cx+6,cy-8,2,0x2104);
-        } else {
-            d.drawFastHLine(cx-11,cy-8,10,ch.skinCol);
-            d.drawFastHLine(cx+1,cy-8,10,ch.skinCol);
-        }
-        d.fillRect(cx-13,py+55,26,9,ch.clothCol);
-        int mY=cy+8;
-        switch(exp){
-            case EXP_NEUTRAL: d.drawFastHLine(cx-6,mY,12,0x2104); break;
-            case EXP_HAPPY:   d.drawLine(cx-6,mY+3,cx,mY-2,0x2104); d.drawLine(cx,mY-2,cx+6,mY+3,0x2104); break;
-            case EXP_SAD:     d.drawLine(cx-6,mY-2,cx,mY+3,0x2104); d.drawLine(cx,mY+3,cx+6,mY-2,0x2104); break;
-            case EXP_THINK:   d.drawFastHLine(cx+2,mY,8,0x2104); d.fillCircle(cx+13,mY-2,3,0x2104); break;
-            case EXP_SHOCK:   d.fillCircle(cx,mY+2,5,0x2104); break;
-        }
+    switch(suit) {
+        case 0: d.fillTriangle(x+2,y,x,y+3,x+4,y+3,col); d.fillRect(x+1,y+3,3,2,col); break;
+        case 1: d.fillCircle(x+1,y+1,1,col); d.fillCircle(x+3,y+1,1,col);
+                d.fillTriangle(x,y+1,x+4,y+1,x+2,y+4,col); break;
+        case 2: d.drawFastHLine(x+2,y,1,col); d.drawFastHLine(x+1,y+1,3,col);
+                d.drawFastHLine(x,y+2,5,col); d.drawFastHLine(x+1,y+3,3,col);
+                d.drawFastHLine(x+2,y+4,1,col); break;
+        case 3: d.fillCircle(x+2,y+1,1,col); d.fillCircle(x+1,y+3,1,col);
+                d.fillCircle(x+3,y+3,1,col); d.fillRect(x+1,y+4,3,1,col); break;
     }
 }
 
-// ── Selection screen ──────────────────────────────────────────────────────
-static void drawSelectionScreen() {
+// ── Drawing: full card (CW×CH) ────────────────────────────────────────────
+static void drawCardTH(int x, int y, Card c, bool hidden=false) {
     auto& d = M5Cardputer.Display;
-    d.fillScreen(C_BG);
-
-    // Header
-    d.fillRect(0,0,240,16,C_HDRBG);
-    d.setTextSize(1); d.setTextColor(C_GOLD);
-    const char* hdr="SELECT YOUR OPPONENT";
-    d.setCursor((240-d.textWidth(hdr))/2,4); d.print(hdr);
-
-    // Counter top right
-    char cnt[8]; snprintf(cnt,sizeof(cnt),"%d/3",charSelIdx+1);
-    d.setTextColor(C_DIM);
-    d.setCursor(240-d.textWidth(cnt)-3,4); d.print(cnt);
-
-    // Large portrait centered
-    drawPortraitLarge(80,18,charSelIdx,EXP_NEUTRAL,false);
-
-    // Character name centered
-    const Character& ch=CHARS[charSelIdx];
-    d.setTextSize(1); d.setTextColor(ch.clothCol);
-    d.setCursor((240-d.textWidth(ch.name))/2,96); d.print(ch.name);
-
-    // Style
-    d.setTextColor(C_GOLD);
-    d.setCursor((240-d.textWidth(ch.style))/2,108); d.print(ch.style);
-
-    // Flavor text
-    const char* flavor[3]={
-        "Bluffs hard, bets big",
-        "Waits for premium hands",
-        "Plays almost anything"
-    };
-    d.setTextColor(C_DIM);
-    d.setCursor((240-d.textWidth(flavor[charSelIdx]))/2,119); d.print(flavor[charSelIdx]);
-
-    // Controls
-    const char* ctrl="A/D=browse   SPACE=challenge";
-    d.setTextColor(0x39E7);
-    d.setCursor((240-d.textWidth(ctrl))/2,127); d.print(ctrl);
-}
-
-// ── Draw helpers ──────────────────────────────────────────────────────────
-static void drawHeader() {
-    auto& d = M5Cardputer.Display;
-    d.fillRect(0,0,240,13,C_HDRBG);
-    d.drawFastHLine(0,12,240,C_WOOD);
-    d.setTextSize(1); d.setTextColor(0xF81F);
-    const char* t="TEXAS HOLD'EM";
-    d.setCursor(4,3); d.print(t);
-    d.setTextColor(C_GOLD);
-    char potstr[16]; snprintf(potstr,sizeof(potstr),"POT:%d",pot);
-    d.setCursor(240-d.textWidth(potstr)-4,3); d.print(potstr);
-}
-
-static void drawOppInfo() {
-    auto& d = M5Cardputer.Display;
-    // Clear opp info area
-    d.fillRect(113,16,124,38,C_FELT);
-    d.setTextSize(1);
-    d.setTextColor(C_DIM);
-    d.setCursor(113,18); d.print(CHARS[selectedChar].name);
-    d.setTextColor(C_TXT);
-    char chips[20]; snprintf(chips,sizeof(chips),"Chips:%d",cpuChips);
-    d.setCursor(113,28); d.print(chips);
-    if(cpuBet>0) {
-        d.setTextColor(C_GOLD);
-        char bet[16]; snprintf(bet,sizeof(bet),"Bet:%d",cpuBet);
-        d.setCursor(113,38); d.print(bet);
-    }
-}
-
-static void drawPlayerInfo() {
-    auto& d = M5Cardputer.Display;
-    d.fillRect(153,90,84,24,C_FELT);
-    d.setTextSize(1);
-    d.setTextColor(C_TXT);
-    char chips[20]; snprintf(chips,sizeof(chips),"Chips:%d",playerChips);
-    d.setCursor(155,92); d.print(chips);
-    if(playerBet>0) {
-        d.setTextColor(C_GOLD);
-        char bet[16]; snprintf(bet,sizeof(bet),"Bet:%d",playerBet);
-        d.setCursor(155,103); d.print(bet);
-    }
-}
-
-static void drawActionBar() {
-    auto& d = M5Cardputer.Display;
-    d.fillRect(0,123,240,12,C_ACTBG);
-    d.drawFastHLine(0,123,240,C_WOOD);
-    d.setTextSize(1); d.setTextColor(0x39E7);
-    switch(thState) {
-        case SELECT_CHAR:
-            d.setCursor(2,125); d.print("A/D=browse  SPC=challenge  Q=menu");
-            break;
-        case PLAYER_ACT: {
-            bool facingBet=(roundBet>playerBet);
-            if(facingBet) {
-                char buf[56];
-                snprintf(buf,sizeof(buf),"A=FOLD  S=CALL%d  D=RAISE  +/-=sz",roundBet-playerBet);
-                d.setCursor(2,125); d.print(buf);
-            } else {
-                d.setCursor(2,125); d.print("A=FOLD  S=CHECK  D=BET  Q=menu");
-            }
-            break;
-        }
-        case CPU_ACT: {
-            char buf[40];
-            snprintf(buf,sizeof(buf),"%s is thinking...",CHARS[selectedChar].name);
-            d.setCursor(2,125); d.print(buf);
-            break;
-        }
-        case SHOWDOWN:
-        case ROUND_END:
-            d.setCursor(2,125); d.print("SPC=next hand  Q=menu");
-            break;
-        default:
-            d.setCursor(2,125); d.print("Q=menu");
-            break;
-    }
-}
-
-static void drawStatusArea() {
-    auto& d = M5Cardputer.Display;
-    // Clear status zone: y=41-52 in felt
-    d.fillRect(0,41,240,12,C_FELT);
-    if(!statusMsg[0]) return;
-    d.setTextSize(1); d.setTextColor(statusCol);
-    d.setCursor((240-d.textWidth(statusMsg))/2,43); d.print(statusMsg);
-}
-
-static void drawCommunityCards() {
-    auto& d = M5Cardputer.Display;
-    // Community card positions: x=43,73,103,133,163 y=55
-    static const int CX[5]={43,73,103,133,163};
-    if(communityCount==0) {
-        // Show label
-        d.fillRect(0,53,240,38,C_FELT);
-        d.setTextSize(1); d.setTextColor(C_DIM);
-        const char* lbl="COMMUNITY";
-        d.setCursor(2,55); d.print(lbl);
+    if(hidden) {
+        d.fillRoundRect(x,y,CW,CH,3,C_BACK);
+        d.drawRoundRect(x,y,CW,CH,3,C_DIM);
+        for(int py=y+4;py<y+CH-3;py+=4) d.drawFastHLine(x+3,py,CW-6,0x0018);
         return;
     }
-    // Clear community area
-    d.fillRect(0,53,240,38,C_FELT);
-    for(int i=0;i<5;i++) {
-        if(i<communityCount) {
-            drawCardTH(CX[i],55,community[i],false);
-        } else {
-            // placeholder (empty)
-            d.drawRoundRect(CX[i],55,CW,CH,3,C_DIM);
-        }
+    uint16_t sc=SUIT_COL[c.suit];
+    d.fillRoundRect(x,y,CW,CH,3,0xFFFF);
+    d.drawRoundRect(x,y,CW,CH,3,sc);
+    char val[4];
+    if(c.val==1)       strcpy(val,"A");
+    else if(c.val==11) strcpy(val,"J");
+    else if(c.val==12) strcpy(val,"Q");
+    else if(c.val==13) strcpy(val,"K");
+    else               snprintf(val,sizeof(val),"%d",c.val);
+    d.setTextSize(1); d.setTextColor(sc);
+    d.setCursor(x+2,y+2); d.print(val);
+    drawSuitSmall(x+2, y+10, c.suit, sc);
+    // Center rank + suit
+    int tw=d.textWidth(val);
+    d.setCursor(x+(CW-tw)/2, y+5); d.print(val);
+    drawSuitTH(x+CW/2, y+19, c.suit, sc);
+}
+
+// ── Drawing: mini card (MCW×MCH) for opponent zones ───────────────────────
+static void drawMiniCardTH(int x, int y, bool hidden, Card c) {
+    auto& d = M5Cardputer.Display;
+    if(hidden) {
+        d.fillRoundRect(x,y,MCW,MCH,2,C_BACK);
+        d.drawRoundRect(x,y,MCW,MCH,2,C_DIM);
+        d.drawFastHLine(x+2,y+3,MCW-4,0x0018);
+        d.drawFastHLine(x+2,y+6,MCW-4,0x0010);
+        d.drawFastHLine(x+2,y+9,MCW-4,0x0018);
+    } else {
+        uint16_t sc=SUIT_COL[c.suit];
+        d.fillRoundRect(x,y,MCW,MCH,2,0xFFFF);
+        d.drawRoundRect(x,y,MCW,MCH,2,sc);
+        char val[4];
+        if(c.val==1)       strcpy(val,"A");
+        else if(c.val==11) strcpy(val,"J");
+        else if(c.val==12) strcpy(val,"Q");
+        else if(c.val==13) strcpy(val,"K");
+        else               snprintf(val,sizeof(val),"%d",c.val);
+        d.setTextSize(1); d.setTextColor(sc);
+        d.setCursor(x+1,y+1); d.print(val);
+        drawSuitSmall(x+1, y+8, c.suit, sc);
     }
 }
 
-static void drawOppCards() {
-    // Two face-down cards at x=56,y=16 and x=84,y=16
-    drawCardTH(56,16,cpuHole[0],true);
-    drawCardTH(84,16,cpuHole[1],true);
-}
-
-static void drawPlayerCards() {
-    drawCardTH(90,89,playerHole[0],false);
-    drawCardTH(120,89,playerHole[1],false);
-}
-
-static void redrawPortrait() {
+// ── Drawing: opponent portrait (24×33) at (px, py) ───────────────────────
+static void drawOppPortrait(int px, int py, int ci, Expression exp, bool blink) {
     auto& d = M5Cardputer.Display;
-    // Clear portrait area in felt
-    d.fillRect(2,14,50,40,C_FELT);
-    drawPortraitSmall(2,14,selectedChar,cpuExp,eyesBlink);
+    d.fillRect(px, py, 24, 33, C_FELT);
+    const Character& ch = CHARS[ci];
+    int cx = px+12;   // horizontal center
+    int cy = py+19;   // vertical center of head
+
+    if(ci==0) { // COWBOY ─ tan skin, wide-brimmed hat, thick mustache
+        // Hat crown
+        d.fillRect(px+5,  cy-18, 14, 9, 0x6200);
+        // Hat brim (wider than crown)
+        d.fillRect(px+1,  cy-10, 22, 3, 0x6200);
+        // Hat band highlight
+        d.drawFastHLine(px+5, cy-10, 14, 0x3100);
+        // Head (warm tan)
+        d.fillCircle(cx, cy, 9, ch.skinCol);
+        // Eyes
+        if(!blink) {
+            d.fillCircle(cx-3,cy-3,2,0x2104); d.fillCircle(cx+3,cy-3,2,0x2104);
+            d.drawPixel(cx-2,cy-4,0xFFFF);    d.drawPixel(cx+4,cy-4,0xFFFF);
+        } else {
+            d.drawFastHLine(cx-5,cy-3,4,0x2104);
+            d.drawFastHLine(cx+1,cy-3,4,0x2104);
+        }
+        // Bushy mustache
+        d.fillRect(cx-5,cy+2,10,3,0x4000);
+        d.fillRect(cx-4,cy+4,8,2,0x5000);
+        // Mouth (below mustache)
+        switch(exp) {
+            case EXP_HAPPY: d.drawLine(cx-3,cy+8,cx,cy+6,0x5000); d.drawLine(cx,cy+6,cx+3,cy+8,0x5000); break;
+            case EXP_SAD:   d.drawLine(cx-3,cy+6,cx,cy+8,0x5000); d.drawLine(cx,cy+8,cx+3,cy+6,0x5000); break;
+            default:        d.drawFastHLine(cx-2,cy+7,4,0x5000); break;
+        }
+        // Shirt collar (leather vest color)
+        d.fillRect(cx-7,py+27,14,6,ch.clothCol);
+        d.fillTriangle(cx-7,py+27,cx,py+31,cx-1,py+27,0xC638);
+        d.fillTriangle(cx+7,py+27,cx,py+31,cx+1,py+27,0xC638);
+    }
+    else if(ci==1) { // SHARK ─ pale skin, slicked hair, shades, dark suit
+        // Slick dark hair swept back
+        d.fillRect(px+3,py+2,18,7,ch.hairCol);
+        d.fillTriangle(px+3,py+2,px,py+7,px+3,py+8,ch.hairCol);
+        // Head (pale)
+        d.fillCircle(cx,cy,9,ch.skinCol);
+        // Sunglasses (iconic, flat black lenses)
+        d.fillRoundRect(cx-8,cy-4,7,5,1,0x0000);
+        d.fillRoundRect(cx+1,cy-4,7,5,1,0x0000);
+        d.drawFastHLine(cx-1,cy-2,2,0x4208);  // bridge
+        // Thin smirk
+        switch(exp) {
+            case EXP_HAPPY: d.drawFastHLine(cx-3,cy+5,6,0x4208); d.drawPixel(cx+3,cy+4,0x4208); break;
+            case EXP_SAD:   d.drawLine(cx-3,cy+4,cx+3,cy+5,0x4208); break;
+            default:        d.drawFastHLine(cx-2,cy+5,5,0x4208); break;
+        }
+        // Dark suit + white shirt + red tie
+        d.fillRect(px+2,py+27,20,6,ch.clothCol);
+        d.fillRect(cx-4,py+27,8,6,0xFFFF);
+        d.fillRect(cx-1,py+27,2,6,C_RED);
+        d.fillTriangle(px+2,py+27,cx-1,py+31,cx-1,py+27,0xFFFF);
+        d.fillTriangle(px+22,py+27,cx+1,py+31,cx+1,py+27,0xFFFF);
+    }
+    else { // ROOKIE ─ light skin, spiky blonde hair, big blue eyes
+        // Spiky hair (3 spikes above head)
+        d.fillRect(px+3,py+6,18,5,ch.hairCol);
+        d.fillTriangle(cx-7,py+6,cx-5,py+0,cx-2,py+6,ch.hairCol);
+        d.fillTriangle(cx-1,py+5,cx+1,py-1,cx+4,py+5,ch.hairCol);
+        d.fillTriangle(cx+4,py+6,cx+7,py+1,cx+9,py+6,ch.hairCol);
+        // Head
+        d.fillCircle(cx,cy,9,ch.skinCol);
+        // Big wide eyes (blue iris, white sclera)
+        if(!blink) {
+            d.fillCircle(cx-3,cy-3,3,0xFFFF); d.fillCircle(cx+3,cy-3,3,0xFFFF);
+            d.fillCircle(cx-3,cy-3,2,0x001F); d.fillCircle(cx+3,cy-3,2,0x001F);
+            d.fillCircle(cx-3,cy-3,1,0x0000); d.fillCircle(cx+3,cy-3,1,0x0000);
+            d.drawPixel(cx-2,cy-4,0xFFFF);    d.drawPixel(cx+4,cy-4,0xFFFF);
+        } else {
+            d.fillRect(cx-6,cy-4,6,2,ch.skinCol);
+            d.fillRect(cx+1,cy-4,6,2,ch.skinCol);
+        }
+        // Mouth
+        switch(exp) {
+            case EXP_HAPPY: d.drawLine(cx-3,cy+6,cx,cy+4,0x5000); d.drawLine(cx,cy+4,cx+3,cy+6,0x5000); break;
+            case EXP_SAD:   d.drawLine(cx-3,cy+4,cx,cy+6,0x5000); d.drawLine(cx,cy+6,cx+3,cy+4,0x5000); break;
+            default:        d.drawLine(cx-3,cy+5,cx+3,cy+5,0x5000); break;
+        }
+        // Hoodie
+        d.fillRect(px+2,py+27,20,6,ch.clothCol);
+        d.fillRect(cx-5,py+27,10,6,(uint16_t)(ch.clothCol>>1));
+    }
 }
 
-static void drawHUD() {
-    drawHeader();
-    drawOppInfo();
-    drawPlayerInfo();
-}
-
-static void redrawTable() {
+// ── Drawing: one opponent zone ─────────────────────────────────────────────
+static void drawOppZone(int i, bool highlight=false) {
     auto& d = M5Cardputer.Display;
-    // Felt area only (y=13-122)
-    d.fillRect(0,13,240,110,C_FELT);
-    redrawPortrait();
-    drawOppCards();
-    drawOppInfo();
-    drawCommunityCards();
-    drawPlayerCards();
-    drawPlayerInfo();
+    int zx = i * OPP_W;
+    d.fillRect(zx, OPP_Y, OPP_W-1, OPP_H, C_FELT);
+    uint16_t border = highlight ? C_GOLD : C_DIM;
+    d.drawRect(zx, OPP_Y, OPP_W-1, OPP_H, border);
+
+    // Portrait (24×33) at zx+1, OPP_Y+2
+    drawOppPortrait(zx+1, OPP_Y+2, i, cpuExpArr[i], eyesBlink && !cpuFoldedArr[i]);
+
+    int rx = zx+27;  // right area start x
+
+    if(cpuFoldedArr[i]) {
+        d.setTextSize(1); d.setTextColor(C_DIM);
+        d.setCursor(rx, OPP_Y+3);  d.print(CHARS[i].name);
+        d.setCursor(rx, OPP_Y+14); d.print("FOLD");
+        return;
+    }
+    d.setTextSize(1);
+    d.setTextColor(CHARS[i].clothCol);
+    d.setCursor(rx, OPP_Y+3); d.print(CHARS[i].name);
+    d.setTextColor(C_GOLD);
+    char chips[12]; snprintf(chips,sizeof(chips),"%d",cpuChipsArr[i]);
+    d.setCursor(rx, OPP_Y+13); d.print(chips);
+    if(cpuBetArr[i]>0) {
+        d.setTextColor(0xFD20);
+        char bet[10]; snprintf(bet,sizeof(bet),"B:%d",cpuBetArr[i]);
+        d.setCursor(rx, OPP_Y+22); d.print(bet);
+    }
+    // Mini cards at zone bottom
+    bool reveal = (thState==SHOWDOWN);
+    int cardY = OPP_Y + OPP_H - MCH - 1;  // = 32 → bottom=47 ✓
+    drawMiniCardTH(rx,       cardY, !reveal, cpuHoleArr[i][0]);
+    drawMiniCardTH(rx+MCW+2, cardY, !reveal, cpuHoleArr[i][1]);
 }
 
+// ── Drawing: community area ────────────────────────────────────────────────
+static void drawCommunityArea() {
+    auto& d = M5Cardputer.Display;
+    d.fillRect(0, COM_Y, 240, STS_Y-COM_Y, C_FELT);
+    // Pot label centered
+    d.setTextSize(1); d.setTextColor(C_GOLD);
+    char potstr[20]; snprintf(potstr,sizeof(potstr),"POT: %d",pot);
+    d.setCursor((240-d.textWidth(potstr))/2, COM_Y+2); d.print(potstr);
+    // Five card slots
+    for(int i=0;i<5;i++) {
+        if(i<communityCount)
+            drawCardTH(CCX[i], CC_Y, community[i], false);
+        else
+            d.drawRoundRect(CCX[i], CC_Y, CW, CH, 3, C_DIM);
+    }
+}
+
+// ── Drawing: player area ───────────────────────────────────────────────────
+static void drawPlayerArea() {
+    auto& d = M5Cardputer.Display;
+    d.fillRect(0, PLY_Y, 240, ACT_Y-PLY_Y, C_FELT);
+    drawCardTH(PC_X1, PC_Y, playerHole[0], playerFolded);
+    drawCardTH(PC_X2, PC_Y, playerHole[1], playerFolded);
+    // Left: label + chips
+    d.setTextSize(1);
+    d.setTextColor(C_DIM); d.setCursor(4, PC_Y+4);  d.print("YOU");
+    d.setTextColor(C_GOLD);
+    char chs[16]; snprintf(chs,sizeof(chs),"$%d",playerChips);
+    d.setCursor(4, PC_Y+14); d.print(chs);
+    // Right: bet amount
+    if(playerBet>0) {
+        d.setTextColor(0xFD20);
+        char bs[12]; snprintf(bs,sizeof(bs),"B:%d",playerBet);
+        d.setCursor(240-d.textWidth(bs)-4, PC_Y+4); d.print(bs);
+    }
+}
+
+// ── Drawing: status row ────────────────────────────────────────────────────
+static void drawStatusRow() {
+    auto& d = M5Cardputer.Display;
+    d.fillRect(0, STS_Y, 240, PLY_Y-STS_Y, C_FELT);
+    if(!statusMsg[0]) return;
+    d.setTextSize(1); d.setTextColor(statusCol);
+    d.setCursor((240-d.textWidth(statusMsg))/2, STS_Y+1); d.print(statusMsg);
+}
+
+// ── Drawing: header ────────────────────────────────────────────────────────
+static void drawHeader() {
+    auto& d = M5Cardputer.Display;
+    d.fillRect(0,0,240,12,C_HDRBG);
+    d.setTextSize(1); d.setTextColor(0xF81F);
+    d.setCursor(4,2); d.print("TEXAS HOLD'EM");
+    d.setTextColor(C_GOLD);
+    char hstr[20]; snprintf(hstr,sizeof(hstr),"Hand:%d",handNumber);
+    d.setCursor(240-d.textWidth(hstr)-4,2); d.print(hstr);
+    d.drawFastHLine(0,11,240,0x3000);
+}
+
+// ── Drawing: action bar ────────────────────────────────────────────────────
+static void drawActionBar() {
+    auto& d = M5Cardputer.Display;
+    d.fillRect(0,ACT_Y,240,135-ACT_Y,C_ACTBG);
+    d.drawFastHLine(0,ACT_Y,240,0x3000);
+    d.setTextSize(1); d.setTextColor(0x39E7);
+    if(thState==PLAYER_ACT) {
+        bool facing=(roundBet>playerBet);
+        if(facing) {
+            char buf[48]; snprintf(buf,sizeof(buf),"A=fold  S=call(%d)  D=raise  +/-=sz",roundBet-playerBet);
+            d.setCursor(2,ACT_Y+3); d.print(buf);
+        } else {
+            d.setCursor(2,ACT_Y+3); d.print("A=fold  S=check  D=bet  +/-=sz  Q=quit");
+        }
+    } else if(thState==SHOWDOWN||thState==ROUND_END) {
+        d.setCursor(2,ACT_Y+3); d.print("SPC=next hand  Q=menu");
+    } else {
+        d.setCursor(2,ACT_Y+3); d.print("Q=menu");
+    }
+}
+
+// ── Full redraw ────────────────────────────────────────────────────────────
 static void redrawAll() {
     auto& d = M5Cardputer.Display;
     d.fillScreen(C_BG);
+    d.fillRect(0, OPP_Y, 240, ACT_Y-OPP_Y, C_FELT);
     drawHeader();
-    // Felt
-    d.fillRect(0,13,240,110,C_FELT);
-    redrawPortrait();
-    drawOppCards();
-    drawOppInfo();
-    drawCommunityCards();
-    drawPlayerCards();
-    drawPlayerInfo();
+    for(int i=0;i<NCPU;i++) drawOppZone(i);
+    drawCommunityArea();
+    drawStatusRow();
+    drawPlayerArea();
     drawActionBar();
-    drawStatusArea();
 }
 
 // ── Forward declarations ──────────────────────────────────────────────────
-static void setCpuExp(Expression e, int ticks);
 static void advanceStreet();
+static void showdown();
 
-// ── Deal animation ────────────────────────────────────────────────────────
-static void animDealCard(int tx, int ty, Card c, bool hidden) {
-    auto& d = M5Cardputer.Display;
-    int sx=107, sy=60;
-    // 4 frames from center to target
-    int px=sx, py2=sy;
-    for(int f=1;f<=4;f++) {
-        // Clear previous frame position
-        d.fillRect(px,py2,CW+2,CH+2,C_FELT);
-        px = sx+(tx-sx)*f/4;
-        py2 = sy+(ty-sy)*f/4;
-        drawCardTH(px,py2,c,hidden);
-        delay(40);
-    }
-    // Clear the animation card (final draw will be done by caller)
-    d.fillRect(px,py2,CW+2,CH+2,C_FELT);
+// ── CPU expression helper ─────────────────────────────────────────────────
+static void setCpuExp(int i, Expression e, int ticks) {
+    cpuExpArr[i]=e; expTimerArr[i]=ticks;
+    drawOppZone(i);
 }
 
-// ── Showdown ──────────────────────────────────────────────────────────────
-static void showdown() {
-    auto& d = M5Cardputer.Display;
+// ── CPU decision for one player ───────────────────────────────────────────
+static void cpuDecideFor(int i) {
+    if(cpuFoldedArr[i]) return;
+    const Character& ch=CHARS[i];
+    int str=getCpuStr(i);
+    int foldThresh  = 2+ch.tightness/2;
+    int raiseThresh = 5+(9-ch.aggression)/2;
+    int r=random(10);
 
-    // Animate flipping CPU hole cards
-    for(int flip=0;flip<3;flip++) {
-        drawCardTH(56,16,cpuHole[0],flip%2==0);
-        drawCardTH(84,16,cpuHole[1],flip%2==0);
-        delay(150);
-    }
-    drawCardTH(56,16,cpuHole[0],false);
-    drawCardTH(84,16,cpuHole[1],false);
-    delay(400);
-
-    // Evaluate both hands
-    int playerRank=0, cpuRank=0;
-    if(communityCount>=3) {
-        Card ph7[7], ch7[7];
-        ph7[0]=playerHole[0]; ph7[1]=playerHole[1];
-        ch7[0]=cpuHole[0];    ch7[1]=cpuHole[1];
-        for(int i=0;i<communityCount;i++) { ph7[2+i]=community[i]; ch7[2+i]=community[i]; }
-        if(communityCount+2>=7) {
-            playerRank=eval7(ph7);
-            cpuRank=eval7(ch7);
-        } else {
-            // 5 cards total
-            Card p5[5], c5[5];
-            p5[0]=playerHole[0]; p5[1]=playerHole[1];
-            c5[0]=cpuHole[0];    c5[1]=cpuHole[1];
-            for(int i=0;i<communityCount;i++){ p5[2+i]=community[i]; c5[2+i]=community[i]; }
-            playerRank=evalHand5(p5);
-            cpuRank=evalHand5(c5);
-        }
-    } else {
-        // No community: compare hole cards by preFlopStr
-        playerRank=preFlopStr(playerHole);
-        cpuRank=preFlopStr(cpuHole);
-    }
-
-    static const char* HAND_NAMES[]={"High Card","Pair","Two Pair","Three of a Kind","Straight","Flush","Full House","Four of a Kind","Straight Flush","Royal Flush"};
-
-    if(playerRank>cpuRank) {
-        playerChips+=pot;
-        Persist::credits=playerChips; Persist::updateCredits();
-        snprintf(statusMsg,sizeof(statusMsg),"You win! %s +%d",HAND_NAMES[playerRank],pot);
-        statusCol=C_GRN; pot=0;
-        setCpuExp(EXP_SAD,80); sndWin();
-    } else if(cpuRank>playerRank) {
-        cpuChips+=pot;
-        snprintf(statusMsg,sizeof(statusMsg),"%s wins! %s",CHARS[selectedChar].name,HAND_NAMES[cpuRank]);
-        statusCol=C_RED; pot=0;
-        setCpuExp(EXP_HAPPY,80); sndLose();
-    } else {
-        // Split pot
-        int half=pot/2;
-        playerChips+=half; cpuChips+=(pot-half);
-        Persist::credits=playerChips; Persist::updateCredits();
-        snprintf(statusMsg,sizeof(statusMsg),"Split pot! %s",HAND_NAMES[playerRank]);
-        statusCol=C_GOLD; pot=0;
-        setCpuExp(EXP_NEUTRAL,40);
-    }
-
-    thState=SHOWDOWN;
-    drawHeader();
-    drawStatusArea();
-    drawActionBar();
-    drawOppInfo();
-    drawPlayerInfo();
-}
-
-// ── CPU AI ────────────────────────────────────────────────────────────────
-static void cpuDecide() {
-    int str=getCpuHandStrength();
-    const Character& ch=CHARS[selectedChar];
-
-    int foldThresh  = 2 + ch.tightness/2;
-    int raiseThresh = 5 + (9-ch.aggression)/2;
-
-    int r = random(10);
-
-    if(roundBet>cpuBet) {
-        int callAmt=roundBet-cpuBet;
+    if(roundBet>cpuBetArr[i]) {
+        int callAmt=roundBet-cpuBetArr[i];
         if(str<foldThresh && r>ch.aggression) {
-            cpuFolded=true;
-            playerChips+=pot; Persist::credits=playerChips; Persist::updateCredits();
-            setCpuExp(EXP_SAD,60);
-            snprintf(statusMsg,sizeof(statusMsg),"%s folds. You win!",CHARS[selectedChar].name);
-            statusCol=C_GRN; pot=0;
-            thState=ROUND_END; sndWin();
-        } else if(str>raiseThresh && r<ch.aggression && cpuChips>callAmt+5) {
-            int raise=roundBet+5+(ch.aggression>7?5:0);
-            if(raise>cpuBet+cpuChips) raise=cpuBet+cpuChips;
-            int addAmt=raise-cpuBet;
-            if(addAmt>cpuChips) addAmt=cpuChips;
-            cpuChips-=addAmt; pot+=addAmt; cpuBet+=addAmt;
-            roundBet=cpuBet;
-            setCpuExp(EXP_THINK,40);
-            snprintf(statusMsg,sizeof(statusMsg),"%s raises to %d.",CHARS[selectedChar].name,cpuBet);
-            statusCol=C_GOLD;
-            thState=PLAYER_ACT; sndChip();
+            cpuFoldedArr[i]=true;
+            setCpuExp(i,EXP_SAD,60);
+            snprintf(statusMsg,sizeof(statusMsg),"%s folds.",CHARS[i].name);
+            statusCol=C_DIM;
+        } else if(str>raiseThresh && r<ch.aggression && cpuChipsArr[i]>callAmt+5) {
+            int raise=roundBet+5+(ch.aggression>6?5:0);
+            int addAmt=raise-cpuBetArr[i]; if(addAmt>cpuChipsArr[i]) addAmt=cpuChipsArr[i];
+            cpuChipsArr[i]-=addAmt; pot+=addAmt; cpuBetArr[i]+=addAmt; roundBet=cpuBetArr[i];
+            setCpuExp(i,EXP_THINK,40);
+            snprintf(statusMsg,sizeof(statusMsg),"%s raises to %d!",CHARS[i].name,cpuBetArr[i]);
+            statusCol=C_GOLD; cpuRaisedThisRound=true; sndChip();
         } else {
-            int actual=callAmt; if(actual>cpuChips) actual=cpuChips;
-            cpuChips-=actual; pot+=actual; cpuBet+=actual;
-            setCpuExp(EXP_NEUTRAL,30);
-            snprintf(statusMsg,sizeof(statusMsg),"%s calls.",CHARS[selectedChar].name);
+            int actual=min(callAmt,cpuChipsArr[i]);
+            cpuChipsArr[i]-=actual; pot+=actual; cpuBetArr[i]+=actual;
+            setCpuExp(i,EXP_NEUTRAL,20);
+            snprintf(statusMsg,sizeof(statusMsg),"%s calls.",CHARS[i].name);
             statusCol=C_DIM; sndChip();
-            advanceStreet();
         }
     } else {
-        if(str>raiseThresh && r<ch.aggression+2 && cpuChips>0) {
-            int betAmt=min(10,cpuChips);
-            cpuChips-=betAmt; pot+=betAmt; cpuBet+=betAmt;
-            roundBet=cpuBet;
-            setCpuExp(EXP_THINK,40);
-            snprintf(statusMsg,sizeof(statusMsg),"%s bets %d.",CHARS[selectedChar].name,betAmt);
-            statusCol=C_GOLD;
-            thState=PLAYER_ACT; sndChip();
+        if(str>raiseThresh && r<ch.aggression && cpuChipsArr[i]>0) {
+            int betAmt=min(10,cpuChipsArr[i]);
+            cpuChipsArr[i]-=betAmt; pot+=betAmt; cpuBetArr[i]+=betAmt; roundBet=cpuBetArr[i];
+            setCpuExp(i,EXP_THINK,40);
+            snprintf(statusMsg,sizeof(statusMsg),"%s bets %d.",CHARS[i].name,betAmt);
+            statusCol=C_GOLD; cpuRaisedThisRound=true; sndChip();
         } else {
-            setCpuExp(EXP_NEUTRAL,20);
-            snprintf(statusMsg,sizeof(statusMsg),"%s checks.",CHARS[selectedChar].name);
+            setCpuExp(i,EXP_NEUTRAL,20);
+            snprintf(statusMsg,sizeof(statusMsg),"%s checks.",CHARS[i].name);
             statusCol=C_DIM;
-            advanceStreet();
         }
+    }
+}
+
+// ── Run all CPU decisions in sequence ─────────────────────────────────────
+static void runCpuSeq() {
+    cpuRaisedThisRound=false;
+    for(int i=0;i<NCPU;i++) {
+        if(cpuFoldedArr[i]) continue;
+        setCpuExp(i,EXP_THINK,30);
+        delay(380);
+        cpuDecideFor(i);
+        drawOppZone(i); drawHeader(); drawCommunityArea(); drawStatusRow();
+        delay(180);
+    }
+    // Count active players
+    int active = playerFolded ? 0 : 1;
+    for(int i=0;i<NCPU;i++) if(!cpuFoldedArr[i]) active++;
+
+    if(active<=1) {
+        if(!playerFolded) {
+            playerChips+=pot; Persist::credits=playerChips; Persist::updateCredits();
+            snprintf(statusMsg,sizeof(statusMsg),"All fold! You win %d!",pot); pot=0;
+            statusCol=C_GRN; sndWin();
+        } else {
+            for(int i=0;i<NCPU;i++) if(!cpuFoldedArr[i]) {
+                cpuChipsArr[i]+=pot; pot=0;
+                snprintf(statusMsg,sizeof(statusMsg),"%s wins the pot!",CHARS[i].name);
+                statusCol=C_RED; sndLose(); break;
+            }
+        }
+        thState=ROUND_END;
+        drawHeader(); drawCommunityArea(); drawStatusRow(); drawActionBar();
+        return;
+    }
+
+    if(cpuRaisedThisRound && !playerFolded && playerBet<roundBet) {
+        thState=PLAYER_ACT;
+        snprintf(statusMsg,sizeof(statusMsg),"Respond to raise...");
+        statusCol=C_GOLD; statusTimer=0;
+        drawStatusRow(); drawActionBar();
+    } else {
+        advanceStreet();
     }
 }
 
 // ── Street advancement ────────────────────────────────────────────────────
 static void advanceStreet() {
-    static const int CX[5]={43,73,103,133,163};
-    roundBet=0; playerBet=0; cpuBet=0; playerActed=false;
+    roundBet=0; playerBet=0;
+    for(int i=0;i<NCPU;i++) cpuBetArr[i]=0;
 
     if(communityCount==0) {
         // Deal flop
         community[0]=pullCard(); community[1]=pullCard(); community[2]=pullCard();
         communityCount=3;
-        redrawTable();
-        // Flash community cards 3 times
-        for(int flash=0;flash<3;flash++) {
-            for(int i=0;i<3;i++) drawCardTH(CX[i],55,community[i],flash%2==0);
-            delay(150);
-        }
-        for(int i=0;i<3;i++) drawCardTH(CX[i],55,community[i],false);
-        statusMsg[0]='\0';
-        thState=PLAYER_ACT;
-        drawStatusArea(); drawActionBar();
+        drawCommunityArea();
+        for(int f=0;f<3;f++) { for(int k=0;k<3;k++) drawCardTH(CCX[k],CC_Y,community[k],f%2==0); delay(130); }
+        for(int k=0;k<3;k++) { drawCardTH(CCX[k],CC_Y,community[k],false); sndCard(); delay(40); }
     } else if(communityCount==3) {
         community[3]=pullCard(); communityCount=4;
-        for(int flash=0;flash<3;flash++) {
-            drawCardTH(CX[3],55,community[3],flash%2==0);
-            delay(150);
-        }
-        drawCardTH(CX[3],55,community[3],false);
-        statusMsg[0]='\0';
-        thState=PLAYER_ACT;
-        drawStatusArea(); drawActionBar();
+        for(int f=0;f<3;f++) { drawCardTH(CCX[3],CC_Y,community[3],f%2==0); delay(130); }
+        drawCardTH(CCX[3],CC_Y,community[3],false); sndCard();
     } else if(communityCount==4) {
         community[4]=pullCard(); communityCount=5;
-        for(int flash=0;flash<3;flash++) {
-            drawCardTH(CX[4],55,community[4],flash%2==0);
-            delay(150);
-        }
-        drawCardTH(CX[4],55,community[4],false);
-        statusMsg[0]='\0';
-        thState=PLAYER_ACT;
-        drawStatusArea(); drawActionBar();
+        for(int f=0;f<3;f++) { drawCardTH(CCX[4],CC_Y,community[4],f%2==0); delay(130); }
+        drawCardTH(CCX[4],CC_Y,community[4],false); sndCard();
     } else {
-        showdown();
+        showdown(); return;
     }
+    statusMsg[0]='\0'; thState=PLAYER_ACT;
+    drawHeader(); drawCommunityArea(); drawStatusRow(); drawActionBar(); drawPlayerArea();
 }
 
-// ── setCpuExp (defined after advanceStreet so we can define it here) ──────
-static void setCpuExp(Expression e, int ticks) {
-    cpuExp=e; expTimer=ticks; redrawPortrait();
+// ── Showdown ──────────────────────────────────────────────────────────────
+static void showdown() {
+    static const char* HN[]={"Hi Card","Pair","2 Pair","3-Kind","Straight","Flush","Full Hse","4-Kind","Str.Flush","Royal!"};
+    // Reveal CPU cards
+    thState=SHOWDOWN;
+    for(int i=0;i<NCPU;i++) drawOppZone(i);
+    delay(500);
+
+    // Evaluate all hands
+    int playerRank = playerFolded ? -1 : 0;
+    int cpuRank[NCPU] = {};
+    if(communityCount>=5) {
+        if(!playerFolded) {
+            Card ph7[7]; ph7[0]=playerHole[0]; ph7[1]=playerHole[1];
+            for(int j=0;j<5;j++) ph7[2+j]=community[j];
+            playerRank=eval7(ph7);
+        }
+        for(int i=0;i<NCPU;i++) {
+            if(!cpuFoldedArr[i]) {
+                Card ch7[7]; ch7[0]=cpuHoleArr[i][0]; ch7[1]=cpuHoleArr[i][1];
+                for(int j=0;j<5;j++) ch7[2+j]=community[j];
+                cpuRank[i]=eval7(ch7);
+            } else cpuRank[i]=-1;
+        }
+    } else {
+        if(!playerFolded) playerRank=preFlopStr(playerHole);
+        for(int i=0;i<NCPU;i++) cpuRank[i]=cpuFoldedArr[i]?-1:preFlopStr(cpuHoleArr[i]);
+    }
+
+    // Find best rank
+    int best=playerRank;
+    for(int i=0;i<NCPU;i++) if(cpuRank[i]>best) best=cpuRank[i];
+
+    // Count winners and split pot
+    int winners=0;
+    bool playerWon=(!playerFolded && playerRank==best);
+    if(playerWon) winners++;
+    for(int i=0;i<NCPU;i++) if(!cpuFoldedArr[i]&&cpuRank[i]==best) winners++;
+    if(winners==0) winners=1;
+    int share=pot/winners;
+
+    if(playerWon) {
+        playerChips+=share; Persist::credits=playerChips; Persist::updateCredits();
+        int rank=min(best,9);
+        snprintf(statusMsg,sizeof(statusMsg),"You win %d! %s",share,HN[rank]);
+        statusCol=C_GOLD; sndWin();
+        for(int i=0;i<NCPU;i++) {
+            if(!cpuFoldedArr[i]&&cpuRank[i]==best) setCpuExp(i,EXP_NEUTRAL,20);
+            else if(!cpuFoldedArr[i]) setCpuExp(i,EXP_SAD,80);
+        }
+    } else {
+        for(int i=0;i<NCPU;i++) {
+            if(!cpuFoldedArr[i]&&cpuRank[i]==best) {
+                cpuChipsArr[i]+=share; setCpuExp(i,EXP_HAPPY,80);
+            } else if(!cpuFoldedArr[i]) {
+                setCpuExp(i,EXP_SAD,60);
+            }
+        }
+        for(int i=0;i<NCPU;i++) if(!cpuFoldedArr[i]&&cpuRank[i]==best) {
+            int rank=min(best,9);
+            snprintf(statusMsg,sizeof(statusMsg),"%s wins! %s",CHARS[i].name,HN[rank]); break;
+        }
+        statusCol=C_RED; sndLose();
+    }
+    pot=0;
+    drawHeader(); drawCommunityArea(); drawStatusRow(); drawActionBar();
+    for(int i=0;i<NCPU;i++) drawOppZone(i);
+    drawPlayerArea();
 }
 
-// ── New hand ──────────────────────────────────────────────────────────────
+// ── Start new hand ────────────────────────────────────────────────────────
 static void startNewHand() {
     shuffleDeck();
-    // Animate dealing
     playerHole[0]=pullCard(); playerHole[1]=pullCard();
-    cpuHole[0]=pullCard();    cpuHole[1]=pullCard();
-    communityCount=0; playerFolded=false; cpuFolded=false;
-    statusMsg[0]='\0';
+    for(int i=0;i<NCPU;i++) { cpuHoleArr[i][0]=pullCard(); cpuHoleArr[i][1]=pullCard(); }
+    communityCount=0; playerFolded=false;
+    for(int i=0;i<NCPU;i++) { cpuFoldedArr[i]=false; cpuBetArr[i]=0; cpuExpArr[i]=EXP_NEUTRAL; }
+    statusMsg[0]='\0'; cpuRaisedThisRound=false;
 
-    // Blinds: player=SB(5), cpu=BB(10)
-    int sb=5, bb=10;
-    playerChips-=sb; cpuChips-=bb; pot=sb+bb;
-    playerBet=sb; cpuBet=bb; roundBet=bb;
-    Persist::credits=playerChips;
-    raiseAmount=10;
-    handNumber++;
-    thState=PLAYER_ACT;
-    cpuExp=EXP_NEUTRAL; expTimer=0;
+    // Rebuy any broke CPUs
+    for(int i=0;i<NCPU;i++) if(cpuChipsArr[i]<=0) cpuChipsArr[i]=100;
+
+    // CPU0=SB(5), CPU1=BB(10), player faces BB
+    pot=0;
+    cpuChipsArr[0]-=5;  pot+=5;  cpuBetArr[0]=5;
+    cpuChipsArr[1]-=10; pot+=10; cpuBetArr[1]=10;
+    roundBet=10; playerBet=0; raiseAmount=10;
+    handNumber++; thState=PLAYER_ACT;
 
     redrawAll();
+    sndCard();
 
-    // Deal animations
-    animDealCard(90,89,playerHole[0],false);  drawCardTH(90,89,playerHole[0],false);
-    animDealCard(56,16,cpuHole[0],true);       drawCardTH(56,16,cpuHole[0],true);
-    animDealCard(120,89,playerHole[1],false); drawCardTH(120,89,playerHole[1],false);
-    animDealCard(84,16,cpuHole[1],true);       drawCardTH(84,16,cpuHole[1],true);
-
-    drawPlayerInfo();
-    drawOppInfo();
-    drawActionBar();
-    snprintf(statusMsg,sizeof(statusMsg),"Hand %d — Your turn",handNumber);
-    statusCol=C_DIM; statusTimer=60;
-    drawStatusArea();
+    snprintf(statusMsg,sizeof(statusMsg),"Hand %d — Blinds: 5/10",handNumber);
+    statusCol=C_DIM; statusTimer=50;
+    drawStatusRow();
 }
 
-// ── Public init ───────────────────────────────────────────────────────────
+// ── init ──────────────────────────────────────────────────────────────────
 void init() {
-    playerChips = Persist::credits;
-    cpuChips    = 100;
-    pot=0; handNumber=0;
-    charSelIdx=0; selectedChar=0;
-    thState=SELECT_CHAR;
+    playerChips=Persist::credits;
+    for(int i=0;i<NCPU;i++) { cpuChipsArr[i]=100; cpuBetArr[i]=0; cpuFoldedArr[i]=false; cpuExpArr[i]=EXP_NEUTRAL; expTimerArr[i]=0; }
+    pot=0; handNumber=0; communityCount=0;
+    statusMsg[0]='\0'; statusTimer=0; statusCol=C_DIM;
     blinkTimer=0; eyesBlink=false;
-    expTimer=0; cpuExp=EXP_NEUTRAL;
-    statusMsg[0]='\0'; statusTimer=0;
     M5Cardputer.Speaker.setVolume(soundVol);
-    drawSelectionScreen();
+    startNewHand();
 }
 
-// ── Public tick ───────────────────────────────────────────────────────────
+// ── tick ──────────────────────────────────────────────────────────────────
 bool tick() {
-    // Blink timer
+    // Blink animation
     blinkTimer++;
     if(blinkTimer>80){ blinkTimer=0; eyesBlink=true; }
-    if(eyesBlink&&blinkTimer>3){ eyesBlink=false; if(thState!=SELECT_CHAR) redrawPortrait(); }
+    if(eyesBlink&&blinkTimer>3){ eyesBlink=false; for(int i=0;i<NCPU;i++) if(!cpuFoldedArr[i]) drawOppZone(i); }
 
-    // Expression timer
-    if(expTimer>0){ expTimer--; }
-    else if(cpuExp!=EXP_NEUTRAL){ cpuExp=EXP_NEUTRAL; if(thState!=SELECT_CHAR) redrawPortrait(); }
+    // Expression timers decay to NEUTRAL
+    for(int i=0;i<NCPU;i++) {
+        if(expTimerArr[i]>0) expTimerArr[i]--;
+        else if(cpuExpArr[i]!=EXP_NEUTRAL){ cpuExpArr[i]=EXP_NEUTRAL; if(!cpuFoldedArr[i]) drawOppZone(i); }
+    }
 
     // Status timer
-    if(statusTimer>0){ statusTimer--; }
-    else if(statusMsg[0]&&thState!=ROUND_END&&thState!=SHOWDOWN){ statusMsg[0]='\0'; drawStatusArea(); }
+    if(statusTimer>0) statusTimer--;
+    else if(statusMsg[0]&&thState==PLAYER_ACT){ statusMsg[0]='\0'; drawStatusRow(); }
 
     if(M5Cardputer.Keyboard.isChange()&&M5Cardputer.Keyboard.isPressed()) {
         auto st=M5Cardputer.Keyboard.keysState();
@@ -878,96 +729,64 @@ bool tick() {
 
         for(char c:st.word) {
             if(c=='q'||c=='Q') {
-                Persist::credits=playerChips;
-                Persist::updateCredits();
-                Persist::save();
+                Persist::credits=playerChips; Persist::updateCredits(); Persist::save();
                 return false;
             }
-            if(c=='m'||c=='M'){ soundOn=!soundOn; }
+            if(c=='m'||c=='M') soundOn=!soundOn;
             if(c==' ') act=true;
 
-            if(thState==SELECT_CHAR) {
-                if(c=='a'||c=='A'){ charSelIdx=(charSelIdx+2)%3; drawSelectionScreen(); }
-                if(c=='d'||c=='D'){ charSelIdx=(charSelIdx+1)%3; drawSelectionScreen(); }
-            }
-            else if(thState==PLAYER_ACT) {
-                bool facingBet=(roundBet>playerBet);
+            if(thState==PLAYER_ACT) {
+                bool facing=(roundBet>playerBet);
                 int callAmt=roundBet-playerBet;
 
                 if(c=='a'||c=='A') { // FOLD
                     playerFolded=true;
-                    cpuChips+=pot; pot=0;
-                    setCpuExp(EXP_HAPPY,80);
-                    snprintf(statusMsg,sizeof(statusMsg),"You fold. %s wins!",CHARS[selectedChar].name);
-                    statusCol=C_RED; thState=ROUND_END;
-                    sndLose();
-                    drawStatusArea(); drawActionBar(); drawOppInfo(); drawHeader();
-                }
-                if(c=='s'||c=='S') { // CHECK or CALL
-                    if(facingBet) {
-                        int actual=callAmt; if(actual>playerChips) actual=playerChips;
-                        playerChips-=actual; pot+=actual; playerBet+=actual;
-                        Persist::credits=playerChips;
-                        sndChip();
-                        drawHeader(); drawPlayerInfo();
-                        thState=CPU_ACT; drawActionBar();
-                        delay(500);
-                        cpuDecide();
-                        drawStatusArea(); drawActionBar(); drawOppInfo(); drawPlayerInfo(); drawHeader();
+                    int cpuActive=0, lastCpu=-1;
+                    for(int i=0;i<NCPU;i++) if(!cpuFoldedArr[i]){ cpuActive++; lastCpu=i; }
+                    if(cpuActive==1) {
+                        cpuChipsArr[lastCpu]+=pot; pot=0;
+                        setCpuExp(lastCpu,EXP_HAPPY,80);
+                        snprintf(statusMsg,sizeof(statusMsg),"You fold. %s wins!",CHARS[lastCpu].name);
+                        statusCol=C_RED; thState=ROUND_END; sndLose();
+                        drawHeader(); drawStatusRow(); drawActionBar(); drawPlayerArea();
                     } else {
-                        playerActed=true;
-                        thState=CPU_ACT; drawActionBar();
-                        delay(400);
-                        cpuDecide();
-                        drawStatusArea(); drawActionBar(); drawOppInfo(); drawPlayerInfo(); drawHeader();
+                        snprintf(statusMsg,sizeof(statusMsg),"You fold.");
+                        statusCol=C_RED; drawStatusRow(); drawPlayerArea();
+                        delay(250); runCpuSeq();
                     }
                 }
+                if(c=='s'||c=='S') { // CHECK or CALL
+                    if(facing) {
+                        int actual=min(callAmt,playerChips);
+                        playerChips-=actual; pot+=actual; playerBet+=actual;
+                        Persist::credits=playerChips;
+                        sndChip(); drawHeader(); drawPlayerArea();
+                    }
+                    thState=CPU_SEQ; drawActionBar();
+                    delay(280); runCpuSeq();
+                }
                 if(c=='d'||c=='D') { // BET or RAISE
-                    int betAmt=raiseAmount;
-                    if(facingBet) betAmt+=callAmt;
+                    int betAmt=raiseAmount; if(facing) betAmt+=callAmt;
                     if(betAmt>playerChips) betAmt=playerChips;
-                    if(betAmt<=0) break;
-                    playerChips-=betAmt; pot+=betAmt; playerBet+=betAmt;
-                    if(playerBet>roundBet) roundBet=playerBet;
-                    Persist::credits=playerChips;
-                    sndChip();
-                    drawHeader(); drawPlayerInfo(); drawActionBar();
-                    thState=CPU_ACT;
-                    delay(600);
-                    cpuDecide();
-                    drawStatusArea(); drawActionBar(); drawOppInfo(); drawPlayerInfo(); drawHeader();
+                    if(betAmt>0) {
+                        playerChips-=betAmt; pot+=betAmt; playerBet+=betAmt;
+                        if(playerBet>roundBet) roundBet=playerBet;
+                        Persist::credits=playerChips;
+                        sndChip(); drawHeader(); drawPlayerArea();
+                        thState=CPU_SEQ; drawActionBar();
+                        delay(450); runCpuSeq();
+                    }
                 }
                 if(c=='+'||c=='=') { raiseAmount=min(raiseAmount+5,50); drawActionBar(); }
                 if(c=='-')          { raiseAmount=max(raiseAmount-5,5);  drawActionBar(); }
             }
         }
 
-        if(act) {
-            if(thState==SELECT_CHAR) {
-                selectedChar=charSelIdx;
-                startNewHand();
+        if(act&&(thState==ROUND_END||thState==SHOWDOWN)) {
+            if(playerChips<=0) {
+                playerChips=100; Persist::credits=100; Persist::updateCredits(); Persist::save();
             }
-            else if(thState==ROUND_END||thState==SHOWDOWN) {
-                if(playerChips<=0) {
-                    auto& d=M5Cardputer.Display;
-                    d.fillScreen(C_BG);
-                    d.setTextSize(1); d.setTextColor(C_RED);
-                    const char* t="BROKE! Better luck next time.";
-                    d.setCursor((240-d.textWidth(t))/2,55); d.print(t);
-                    d.setTextColor(C_DIM);
-                    char b[32]; snprintf(b,sizeof(b),"Played %d hands.",handNumber);
-                    d.setCursor((240-d.textWidth(b))/2,71); d.print(b);
-                    Persist::credits=100; Persist::updateCredits(); Persist::save();
-                    delay(3000);
-                    return false;
-                }
-                if(cpuChips<=0) {
-                    cpuChips=100;
-                    snprintf(statusMsg,sizeof(statusMsg),"Opponent rebuys 100 chips!");
-                    statusCol=C_GRN; statusTimer=60;
-                }
-                startNewHand();
-            }
+            startNewHand();
         }
     }
 
