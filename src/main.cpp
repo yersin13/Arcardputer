@@ -7,6 +7,7 @@
 #include "videopoker.h"
 #include "hilo.h"
 #include "roulette.h"
+#include "texasholdem.h"
 
 static const uint16_t C_BG   = 0x0000;
 static const uint16_t C_GOLD = 0xFEA0;
@@ -14,11 +15,11 @@ static const uint16_t C_TXT  = 0xFFFF;
 static const uint16_t C_DIM  = 0x4208;
 static const uint16_t C_RED  = 0xF800;
 
-static enum { MENU, GAME_SLOTS, GAME_BLACKJACK, GAME_DICE, GAME_VIDEOPOKER, GAME_HILO, GAME_ROULETTE } appState = MENU;
+static enum { MENU, GAME_SLOTS, GAME_BLACKJACK, GAME_DICE, GAME_VIDEOPOKER, GAME_HILO, GAME_ROULETTE, GAME_POKER } appState = MENU;
 static int menuSel = 0;
 static bool menuSoundOn = false;
 
-static const int NGAMES = 6;
+static const int NGAMES = 7;
 
 struct GameEntry {
     const char*  name;
@@ -34,6 +35,7 @@ static const GameEntry GAMES[NGAMES] = {
     { "VIDEO POKER",   "5-card draw  Jacks+",       0x07FF, "VP" },  // cyan
     { "HI / LO",       "Guess higher or lower",     0x07E0, "HL" },  // green
     { "ROULETTE",      "European wheel  37 pockets",0xF81F, "RO" },  // magenta
+    { "TEXAS HOLD'EM", "Arcade poker vs characters",0xF81F, "TH" },  // magenta
 };
 
 // 2-column x 3-row grid
@@ -213,7 +215,8 @@ void loop() {
                     case 2: Dice::init();       appState = GAME_DICE;       break;
                     case 3: VideoPoker::init(); appState = GAME_VIDEOPOKER; break;
                     case 4: HiLo::init();       appState = GAME_HILO;       break;
-                    case 5: Roulette::init();   appState = GAME_ROULETTE;   break;
+                    case 5: Roulette::init();       appState = GAME_ROULETTE;   break;
+                    case 6: TexasHoldEm::init();    appState = GAME_POKER;      break;
                 }
             }
         }
@@ -227,7 +230,8 @@ void loop() {
         case GAME_DICE:       running = Dice::tick();       break;
         case GAME_VIDEOPOKER: running = VideoPoker::tick(); break;
         case GAME_HILO:       running = HiLo::tick();       break;
-        case GAME_ROULETTE:   running = Roulette::tick();   break;
+        case GAME_ROULETTE:   running = Roulette::tick();      break;
+        case GAME_POKER:      running = TexasHoldEm::tick();  break;
         default: break;
     }
 
