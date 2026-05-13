@@ -220,12 +220,12 @@ static void drawCardTH(int x, int y, Card c, bool hidden=false) {
     else if(c.val==13) strcpy(val,"K");
     else               snprintf(val,sizeof(val),"%d",c.val);
     d.setTextSize(1); d.setTextColor(sc);
-    d.setCursor(x+2,y+2); d.print(val);
-    drawSuitSmall(x+2, y+10, c.suit, sc);
-    // Center rank + suit
-    int tw=d.textWidth(val);
-    d.setCursor(x+(CW-tw)/2, y+5); d.print(val);
-    drawSuitTH(x+CW/2, y+19, c.suit, sc);
+    // Top-left: rank only (no duplicate)
+    d.setCursor(x+2, y+2); d.print(val);
+    // Top-left below rank: small suit icon
+    drawSuitSmall(x+2, y+11, c.suit, sc);
+    // Center: large suit symbol only (no repeated rank)
+    drawSuitTH(x+CW/2, y+CH/2+2, c.suit, sc);
 }
 
 // ── Drawing: mini card (MCW×MCH) for opponent zones ───────────────────────
@@ -258,90 +258,157 @@ static void drawOppPortrait(int px, int py, int ci, Expression exp, bool blink) 
     auto& d = M5Cardputer.Display;
     d.fillRect(px, py, 24, 33, C_FELT);
     const Character& ch = CHARS[ci];
-    int cx = px+12;   // horizontal center
-    int cy = py+19;   // vertical center of head
+    int cx = px+12;  // horizontal center
 
-    if(ci==0) { // COWBOY ─ tan skin, wide-brimmed hat, thick mustache
-        // Hat crown
-        d.fillRect(px+5,  cy-18, 14, 9, 0x6200);
-        // Hat brim (wider than crown)
-        d.fillRect(px+1,  cy-10, 22, 3, 0x6200);
-        // Hat band highlight
-        d.drawFastHLine(px+5, cy-10, 14, 0x3100);
-        // Head (warm tan)
-        d.fillCircle(cx, cy, 9, ch.skinCol);
+    if(ci==0) { // ── COWBOY: wide hat, block face, thick drooping mustache ──
+        // Hat crown (tall, centered)
+        d.fillRect(px+5, py+0, 14, 9, 0x6200);
+        // Crown top dent detail
+        d.fillRect(px+6, py+0, 12, 2, 0x4100);
+        // Hat brim (full width, extends beyond face)
+        d.fillRect(px+1, py+8, 22, 3, 0x6200);
+        // Hat band
+        d.drawFastHLine(px+5, py+8, 14, 0x2000);
+
+        // Face (rectangular, weathered look)
+        d.fillRoundRect(px+4, py+10, 16, 16, 2, ch.skinCol);
+        // Forehead shadow under hat
+        d.drawFastHLine(px+4, py+10, 16, 0xCA92);
+
+        // Thick eyebrows
+        d.fillRect(px+5, py+13, 5, 2, 0x4000);
+        d.fillRect(px+14, py+13, 5, 2, 0x4000);
+
         // Eyes
         if(!blink) {
-            d.fillCircle(cx-3,cy-3,2,0x2104); d.fillCircle(cx+3,cy-3,2,0x2104);
-            d.drawPixel(cx-2,cy-4,0xFFFF);    d.drawPixel(cx+4,cy-4,0xFFFF);
+            d.fillRect(px+5,  py+16, 5, 3, 0x2104);
+            d.fillRect(px+14, py+16, 5, 3, 0x2104);
+            d.drawPixel(px+6,  py+16, 0xFFFF);  // catchlight
+            d.drawPixel(px+15, py+16, 0xFFFF);
         } else {
-            d.drawFastHLine(cx-5,cy-3,4,0x2104);
-            d.drawFastHLine(cx+1,cy-3,4,0x2104);
+            d.drawFastHLine(px+5, py+18, 5, 0x4000);
+            d.drawFastHLine(px+14, py+18, 5, 0x4000);
         }
-        // Bushy mustache
-        d.fillRect(cx-5,cy+2,10,3,0x4000);
-        d.fillRect(cx-4,cy+4,8,2,0x5000);
-        // Mouth (below mustache)
+
+        // Big drooping handlebar mustache
+        d.fillRect(px+4, py+21, 16, 3, 0x4000);   // upper bar
+        d.fillRect(px+4, py+22, 3, 4, 0x4000);    // left droop
+        d.fillRect(px+17, py+22, 3, 4, 0x4000);   // right droop
+        d.fillRect(px+5, py+24, 2, 2, 0x2000);    // droop shade L
+        d.fillRect(px+17, py+24, 2, 2, 0x2000);   // droop shade R
+
+        // Mouth expression (just visible below mustache)
         switch(exp) {
-            case EXP_HAPPY: d.drawLine(cx-3,cy+8,cx,cy+6,0x5000); d.drawLine(cx,cy+6,cx+3,cy+8,0x5000); break;
-            case EXP_SAD:   d.drawLine(cx-3,cy+6,cx,cy+8,0x5000); d.drawLine(cx,cy+8,cx+3,cy+6,0x5000); break;
-            default:        d.drawFastHLine(cx-2,cy+7,4,0x5000); break;
+            case EXP_HAPPY: d.drawFastHLine(cx-2, py+27, 4, 0x6340); break;
+            case EXP_SAD:   d.drawLine(cx-2,py+26,cx+2,py+28,0x6340); break;
+            default:        d.drawFastHLine(cx-2, py+26, 4, 0x8430); break;
         }
-        // Shirt collar (leather vest color)
-        d.fillRect(cx-7,py+27,14,6,ch.clothCol);
-        d.fillTriangle(cx-7,py+27,cx,py+31,cx-1,py+27,0xC638);
-        d.fillTriangle(cx+7,py+27,cx,py+31,cx+1,py+27,0xC638);
+
+        // Western shirt + V-collar
+        d.fillRect(px+3, py+26, 18, 7, ch.clothCol);
+        d.fillTriangle(px+3, py+26, cx, py+30, cx-1, py+26, 0xE71C);
+        d.fillTriangle(px+21, py+26, cx, py+30, cx+1, py+26, 0xE71C);
     }
-    else if(ci==1) { // SHARK ─ pale skin, slicked hair, shades, dark suit
-        // Slick dark hair swept back
-        d.fillRect(px+3,py+2,18,7,ch.hairCol);
-        d.fillTriangle(px+3,py+2,px,py+7,px+3,py+8,ch.hairCol);
-        // Head (pale)
-        d.fillCircle(cx,cy,9,ch.skinCol);
-        // Sunglasses (iconic, flat black lenses)
-        d.fillRoundRect(cx-8,cy-4,7,5,1,0x0000);
-        d.fillRoundRect(cx+1,cy-4,7,5,1,0x0000);
-        d.drawFastHLine(cx-1,cy-2,2,0x4208);  // bridge
-        // Thin smirk
+    else if(ci==1) { // ── SHARK: slick hair, wide sunglasses, dark power suit ──
+        // Slicked-back dark hair (flat top, sides)
+        d.fillRect(px+2, py+0, 20, 8, ch.hairCol);
+        d.fillRect(px+2, py+7, 3, 6, ch.hairCol);   // left side
+        d.fillRect(px+19, py+7, 3, 6, ch.hairCol);  // right side
+        // Hair sheen
+        d.drawFastHLine(px+5, py+2, 12, 0x4A69);
+
+        // Face (angular, slightly narrow at chin)
+        d.fillRoundRect(px+4, py+7, 16, 18, 2, ch.skinCol);
+        // Cheekbone highlight
+        d.drawPixel(px+5, py+10, 0xEF7D);
+        d.drawPixel(px+18, py+10, 0xEF7D);
+
+        // Stern eyebrows above shades
+        d.drawFastHLine(px+4, py+11, 6, ch.hairCol);
+        d.drawFastHLine(px+14, py+11, 6, ch.hairCol);
+
+        // Signature sunglasses — wide flat black lenses
+        d.fillRoundRect(px+4,  py+13, 7, 5, 1, 0x0000);
+        d.fillRoundRect(px+13, py+13, 7, 5, 1, 0x0000);
+        d.drawFastHLine(px+11, py+15, 2, 0x2945);   // nose bridge
+        // Lens glint
+        d.drawPixel(px+5, py+14, 0x2945);
+        d.drawPixel(px+14, py+14, 0x2945);
+
+        // Thin cold mouth
         switch(exp) {
-            case EXP_HAPPY: d.drawFastHLine(cx-3,cy+5,6,0x4208); d.drawPixel(cx+3,cy+4,0x4208); break;
-            case EXP_SAD:   d.drawLine(cx-3,cy+4,cx+3,cy+5,0x4208); break;
-            default:        d.drawFastHLine(cx-2,cy+5,5,0x4208); break;
+            case EXP_HAPPY: d.drawFastHLine(cx-3,py+23,7,0x8430); d.drawPixel(cx+4,py+22,0x8430); break;
+            case EXP_SAD:   d.drawLine(cx-3,py+22,cx+3,py+24,0x8430); break;
+            case EXP_THINK: d.drawFastHLine(cx,py+23,4,0x8430); break;
+            default:        d.drawFastHLine(cx-2,py+23,6,0x8430); break;
         }
+
         // Dark suit + white shirt + red tie
-        d.fillRect(px+2,py+27,20,6,ch.clothCol);
-        d.fillRect(cx-4,py+27,8,6,0xFFFF);
-        d.fillRect(cx-1,py+27,2,6,C_RED);
-        d.fillTriangle(px+2,py+27,cx-1,py+31,cx-1,py+27,0xFFFF);
-        d.fillTriangle(px+22,py+27,cx+1,py+31,cx+1,py+27,0xFFFF);
+        d.fillRect(px+2, py+25, 20, 8, ch.clothCol);
+        d.fillRect(cx-4, py+25, 8, 8, 0xFFFF);       // shirt
+        d.fillRect(cx-1, py+25, 2, 8, C_RED);         // tie
+        // Lapels
+        d.fillTriangle(px+2, py+25, cx-1, py+29, cx-1, py+25, 0xFFFF);
+        d.fillTriangle(px+22, py+25, cx+1, py+29, cx+1, py+25, 0xFFFF);
+        // Tie knot
+        d.fillRect(cx-2, py+25, 4, 2, 0xC000);
     }
-    else { // ROOKIE ─ light skin, spiky blonde hair, big blue eyes
-        // Spiky hair (3 spikes above head)
-        d.fillRect(px+3,py+6,18,5,ch.hairCol);
-        d.fillTriangle(cx-7,py+6,cx-5,py+0,cx-2,py+6,ch.hairCol);
-        d.fillTriangle(cx-1,py+5,cx+1,py-1,cx+4,py+5,ch.hairCol);
-        d.fillTriangle(cx+4,py+6,cx+7,py+1,cx+9,py+6,ch.hairCol);
-        // Head
-        d.fillCircle(cx,cy,9,ch.skinCol);
-        // Big wide eyes (blue iris, white sclera)
+    else { // ── ROOKIE: spiky hair, giant eyes, big grin ──
+        // 3 prominent spikes (yellow/blonde)
+        d.fillRect(px+3, py+7, 18, 5, ch.hairCol);
+        d.fillTriangle(cx-7, py+7, cx-5, py+0, cx-2, py+7, ch.hairCol); // left spike
+        d.fillTriangle(cx-1, py+6, cx+1, py-1, cx+4, py+6, ch.hairCol); // center spike (tallest)
+        d.fillTriangle(cx+4, py+7, cx+7, py+1, cx+9, py+7, ch.hairCol); // right spike
+
+        // Round youthful face
+        d.fillRoundRect(px+3, py+8, 18, 17, 4, ch.skinCol);
+        // Cheek blush dots
+        d.drawPixel(px+5,  py+18, 0xFB8C);
+        d.drawPixel(px+18, py+18, 0xFB8C);
+
+        // Raised eyebrows (expressive)
+        d.drawFastHLine(px+5, py+11, 5, 0x6340);
+        d.drawFastHLine(px+14, py+11, 5, 0x6340);
+
+        // GIANT eyes (signature feature — use fillRect for cleaner pixels)
         if(!blink) {
-            d.fillCircle(cx-3,cy-3,3,0xFFFF); d.fillCircle(cx+3,cy-3,3,0xFFFF);
-            d.fillCircle(cx-3,cy-3,2,0x001F); d.fillCircle(cx+3,cy-3,2,0x001F);
-            d.fillCircle(cx-3,cy-3,1,0x0000); d.fillCircle(cx+3,cy-3,1,0x0000);
-            d.drawPixel(cx-2,cy-4,0xFFFF);    d.drawPixel(cx+4,cy-4,0xFFFF);
+            // White sclera (square-ish for pixel art style)
+            d.fillRoundRect(px+5, py+13, 5, 5, 1, 0xFFFF);
+            d.fillRoundRect(px+14, py+13, 5, 5, 1, 0xFFFF);
+            // Blue iris
+            d.fillRect(px+6, py+14, 3, 3, 0x001F);
+            d.fillRect(px+15, py+14, 3, 3, 0x001F);
+            // Pupils
+            d.fillRect(px+7, py+15, 1, 1, 0x0000);
+            d.fillRect(px+16, py+15, 1, 1, 0x0000);
+            // Catchlights
+            d.drawPixel(px+6,  py+14, 0xFFFF);
+            d.drawPixel(px+15, py+14, 0xFFFF);
         } else {
-            d.fillRect(cx-6,cy-4,6,2,ch.skinCol);
-            d.fillRect(cx+1,cy-4,6,2,ch.skinCol);
+            // Closed eyes (curve)
+            d.drawFastHLine(px+5, py+16, 5, 0x6340);
+            d.drawFastHLine(px+14, py+16, 5, 0x6340);
         }
-        // Mouth
+
+        // Big grin with visible teeth
         switch(exp) {
-            case EXP_HAPPY: d.drawLine(cx-3,cy+6,cx,cy+4,0x5000); d.drawLine(cx,cy+4,cx+3,cy+6,0x5000); break;
-            case EXP_SAD:   d.drawLine(cx-3,cy+4,cx,cy+6,0x5000); d.drawLine(cx,cy+6,cx+3,cy+4,0x5000); break;
-            default:        d.drawLine(cx-3,cy+5,cx+3,cy+5,0x5000); break;
+            case EXP_HAPPY:
+                d.drawLine(cx-4,py+21,cx,py+23,0x5000); d.drawLine(cx,py+23,cx+4,py+21,0x5000);
+                d.fillRect(cx-3,py+22,6,2,0xFFFF);  // teeth
+                break;
+            case EXP_SAD:
+                d.drawLine(cx-4,py+22,cx,py+20,0x5000); d.drawLine(cx,py+20,cx+4,py+22,0x5000);
+                break;
+            default:
+                d.drawLine(cx-4,py+22,cx,py+24,0x5000); d.drawLine(cx,py+24,cx+4,py+22,0x5000);
+                d.fillRect(cx-2,py+23,4,1,0xFFFF);  // small teeth
+                break;
         }
-        // Hoodie
-        d.fillRect(px+2,py+27,20,6,ch.clothCol);
-        d.fillRect(cx-5,py+27,10,6,(uint16_t)(ch.clothCol>>1));
+
+        // Hoodie (bright, with hood opening)
+        d.fillRect(px+3, py+25, 18, 8, ch.clothCol);
+        d.fillRect(cx-4, py+25, 8, 8, (uint16_t)(ch.clothCol | 0x0008));
+        d.drawFastHLine(cx-2, py+25, 4, ch.skinCol);  // neck
     }
 }
 
@@ -598,6 +665,24 @@ static void advanceStreet() {
     drawHeader(); drawCommunityArea(); drawStatusRow(); drawActionBar(); drawPlayerArea();
 }
 
+// ── Result flash overlay ──────────────────────────────────────────────────
+static void showResultFlash(const char* msg, uint16_t col) {
+    auto& d = M5Cardputer.Display;
+    // Flash a big centered message 4 times over the felt
+    for(int f=0;f<4;f++) {
+        bool on=(f%2==0);
+        d.fillRect(14, 54, 212, 26, on ? col : C_FELT);
+        if(on) {
+            d.setTextSize(2); d.setTextColor(on ? (uint16_t)0x0000 : col);
+            int tw = d.textWidth(msg);
+            d.setCursor(14+(212-tw)/2, 59); d.print(msg);
+        }
+        delay(220);
+    }
+    d.setTextSize(1);
+    drawCommunityArea();
+}
+
 // ── Showdown ──────────────────────────────────────────────────────────────
 static void showdown() {
     static const char* HN[]={"Hi Card","Pair","2 Pair","3-Kind","Straight","Flush","Full Hse","4-Kind","Str.Flush","Royal!"};
@@ -642,8 +727,10 @@ static void showdown() {
     if(playerWon) {
         playerChips+=share; Persist::credits=playerChips; Persist::updateCredits();
         int rank=min(best,9);
+        sndWin();
+        showResultFlash("YOU WIN!", C_GRN);
         snprintf(statusMsg,sizeof(statusMsg),"You win %d! %s",share,HN[rank]);
-        statusCol=C_GOLD; sndWin();
+        statusCol=C_GOLD;
         for(int i=0;i<NCPU;i++) {
             if(!cpuFoldedArr[i]&&cpuRank[i]==best) setCpuExp(i,EXP_NEUTRAL,20);
             else if(!cpuFoldedArr[i]) setCpuExp(i,EXP_SAD,80);
@@ -656,11 +743,15 @@ static void showdown() {
                 setCpuExp(i,EXP_SAD,60);
             }
         }
+        sndLose();
+        // Find winner name for flash
         for(int i=0;i<NCPU;i++) if(!cpuFoldedArr[i]&&cpuRank[i]==best) {
+            char fb[14]; snprintf(fb,sizeof(fb),"%s WINS",CHARS[i].name);
+            showResultFlash(fb, C_RED);
             int rank=min(best,9);
             snprintf(statusMsg,sizeof(statusMsg),"%s wins! %s",CHARS[i].name,HN[rank]); break;
         }
-        statusCol=C_RED; sndLose();
+        statusCol=C_RED;
     }
     pot=0;
     drawHeader(); drawCommunityArea(); drawStatusRow(); drawActionBar();
